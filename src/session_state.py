@@ -13,19 +13,28 @@ class SessionState(Enum):
 
 
 STATE_ICONS = {
-    SessionState.IDLE: "\U0001f7e1",
-    SessionState.WORKING: "\U0001f535",
-    SessionState.WAITING_INPUT: "\U0001f7e0",
-    SessionState.ERROR: "\U0001f534",
-    SessionState.STOPPED: "\u26ab",
+    SessionState.IDLE: "\U0001f7e1",          # yellow circle
+    SessionState.WORKING: "\U0001f535",        # blue circle
+    SessionState.WAITING_INPUT: "\U0001f7e0",  # orange circle
+    SessionState.ERROR: "\U0001f534",          # red circle
+    SessionState.STOPPED: "\u26ab",            # black circle
 }
 
 STATE_LABELS = {
-    SessionState.IDLE: "v\u00e4ntar p\u00e5 kommando",
-    SessionState.WORKING: "jobbar...",
-    SessionState.WAITING_INPUT: "v\u00e4ntar p\u00e5 svar",
+    SessionState.IDLE: "v\u00e4ntar p\u00e5 meddelande",
+    SessionState.WORKING: "arbetar...",
+    SessionState.WAITING_INPUT: "v\u00e4ntar p\u00e5 ditt val",
     SessionState.ERROR: "fel",
     SessionState.STOPPED: "stoppad",
+}
+
+# Short labels for Tess/AgentZero API consumers
+STATE_LABELS_SHORT = {
+    SessionState.IDLE: "idle",
+    SessionState.WORKING: "working",
+    SessionState.WAITING_INPUT: "needs_input",
+    SessionState.ERROR: "error",
+    SessionState.STOPPED: "stopped",
 }
 
 
@@ -49,3 +58,18 @@ class SessionInfo:
     @property
     def is_alive(self) -> bool:
         return self.state not in (SessionState.STOPPED, SessionState.ERROR)
+
+    @property
+    def is_ready_for_input(self) -> bool:
+        """True when Claude is idle and ready to receive a new message."""
+        return self.state == SessionState.IDLE
+
+    @property
+    def needs_user_response(self) -> bool:
+        """True when Claude asked a question and waits for user choice."""
+        return self.state == SessionState.WAITING_INPUT
+
+    @property
+    def is_busy(self) -> bool:
+        """True when Claude is actively working (processing or running tools)."""
+        return self.state == SessionState.WORKING
