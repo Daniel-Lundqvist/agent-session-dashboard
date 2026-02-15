@@ -176,6 +176,131 @@ def focus_terminal_by_tty(tty):
     return False
 
 
+def get_window_id_for_tty(tty):
+    """Get the X window ID for a terminal by tty, using the marker technique."""
+    pts_path = f"/dev/{tty}"
+    if not os.path.exists(pts_path):
+        return None
+
+    marker = f"__SPLIT_{tty.replace('/', '_')}_{int(time.time() * 1000) % 100000}__"
+    try:
+        with open(pts_path, "w") as f:
+            f.write(f"\033]0;{marker}\007")
+        time.sleep(0.25)
+
+        result = subprocess.run(
+            ["wmctrl", "-l"], capture_output=True, text=True, timeout=2
+        )
+        wid = None
+        for line in result.stdout.splitlines():
+            if marker in line:
+                wid = line.split()[0]
+                break
+
+        # Clear marker
+        with open(pts_path, "w") as f:
+            f.write("\033]0;\007")
+
+        return wid
+    except Exception:
+        try:
+            with open(pts_path, "w") as f:
+                f.write("\033]0;\007")
+        except Exception:
+            pass
+    return None
+
+
+def split_view_terminals(ttys, direction="horizontal"):
+    """Tile terminal windows side by side or stacked.
+
+    direction: 'horizontal' = side by side, 'vertical' = stacked top/bottom
+    """
+    if not ttys:
+        return False
+
+    # Get workarea
+    try:
+        result = subprocess.run(
+            ["xprop", "-root", "_NET_WORKAREA"],
+            capture_output=True, text=True, timeout=2
+        )
+        parts = result.stdout.split("=")[1].strip().split(",")
+        wa_x, wa_y, wa_w, wa_h = int(parts[0]), int(parts[1]), int(parts[2]), int(parts[3])
+    except Exception:
+        wa_x, wa_y, wa_w, wa_h = 0, 27, 1920, 1053
+
+    n = len(ttys)
+    if n == 0:
+        return False
+
+    # Collect window IDs
+    windows = []
+    for tty in ttys:
+        wid = get_window_id_for_tty(tty)
+        if wid:
+            windows.append(wid)
+
+    if not windows:
+        return False
+
+    n = len(windows)
+
+    # Calculate positions
+    positions = []
+    if direction == "horizontal":
+        # Side by side
+        w = wa_w // n
+        for i, wid in enumerate(windows):
+            positions.append((wid, wa_x + i * w, wa_y, w, wa_h))
+    elif direction == "vertical":
+        # Stacked
+        h = wa_h // n
+        for i, wid in enumerate(windows):
+            positions.append((wid, wa_x, wa_y + i * h, wa_w, h))
+    elif direction == "grid":
+        # Grid layout for 3+ windows
+        cols = 2 if n >= 2 else 1
+        rows = (n + cols - 1) // cols
+        w = wa_w // cols
+        h = wa_h // rows
+        for i, wid in enumerate(windows):
+            col = i % cols
+            row = i // cols
+            positions.append((wid, wa_x + col * w, wa_y + row * h, w, h))
+    else:
+        return False
+
+    # Apply positions
+    for wid, x, y, w, h in positions:
+        try:
+            # Remove maximized state first
+            subprocess.run(
+                ["wmctrl", "-i", "-r", wid, "-b", "remove,maximized_vert,maximized_horz"],
+                timeout=2, capture_output=True
+            )
+            time.sleep(0.05)
+            # Move and resize: gravity,x,y,w,h
+            subprocess.run(
+                ["wmctrl", "-i", "-r", wid, "-e", f"0,{x},{y},{w},{h}"],
+                timeout=2, capture_output=True
+            )
+        except Exception:
+            continue
+
+    # Activate first window
+    if windows:
+        try:
+            subprocess.run(
+                ["xdotool", "windowactivate", windows[0]],
+                timeout=2, capture_output=True
+            )
+        except Exception:
+            pass
+
+    return True
+
+
 def detect_launcher(jsonl_path):
     """Detect if the session was launched by AgentZero/Tess or similar."""
     try:
@@ -1113,6 +1238,78 @@ body {
 .agent-toggle:hover { opacity: 0.8; }
 .terminal-link:hover { text-decoration: underline; }
 
+.split-separator {
+    width: 1px;
+    height: 24px;
+    background: #30363d;
+    margin: 0 4px;
+}
+
+.split-group {
+    display: flex;
+    gap: 4px;
+    flex-wrap: wrap;
+}
+
+.split-btn {
+    background: #1c1f26;
+    color: #8b949e;
+    border: 1px solid #30363d;
+    border-radius: 16px;
+    padding: 4px 12px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.2s;
+    font-family: inherit;
+    white-space: nowrap;
+}
+
+.split-btn:hover:not(:disabled) {
+    background: #2d1f5e;
+    color: #bc8cff;
+    border-color: #7c3aed;
+}
+
+.split-btn:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+}
+
+.split-btn.split-selected {
+    border-color: #58a6ff;
+    color: #58a6ff;
+}
+
+.card.selected {
+    outline: 2px solid #58a6ff;
+    outline-offset: -2px;
+}
+
+.card-select {
+    width: 16px;
+    height: 16px;
+    border: 2px solid #484f58;
+    border-radius: 4px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    transition: all 0.15s;
+    margin-right: 6px;
+    flex-shrink: 0;
+}
+
+.card-select:hover {
+    border-color: #58a6ff;
+}
+
+.card-select.checked {
+    background: #58a6ff;
+    border-color: #58a6ff;
+    color: #fff;
+}
+
 [data-tip] {
     position: relative;
     cursor: help;
@@ -1240,6 +1437,46 @@ async function focusTerminal(tty) {
     }
 }
 
+async function splitView(mode, direction) {
+    let ttys = [];
+    if (mode === 'active') {
+        ttys = _allSessions.filter(s => s.hasTerminal && s.tty).map(s => s.tty);
+    } else if (mode === 'selected') {
+        ttys = Array.from(_selectedSessions).map(id => {
+            const s = _allSessions.find(s => (s.slug || s.id) === id);
+            return s && s.tty ? s.tty : null;
+        }).filter(Boolean);
+    } else if (mode === 'filtered') {
+        const fn = FILTERS[_currentFilter]?.fn || (() => true);
+        ttys = _allSessions.filter(fn).filter(s => s.hasTerminal && s.tty).map(s => s.tty);
+    }
+    if (ttys.length === 0) {
+        console.warn('No terminals to split');
+        return;
+    }
+    const params = ttys.map(t => 'tty=' + encodeURIComponent(t)).join('&');
+    try {
+        const res = await fetch('/api/split?' + params + '&dir=' + direction);
+        const data = await res.json();
+        if (!data.ok) console.warn('Split failed');
+    } catch (err) {
+        console.error('Split error:', err);
+    }
+}
+
+let _selectedSessions = new Set();
+
+function toggleSelectSession(id, el) {
+    if (_selectedSessions.has(id)) {
+        _selectedSessions.delete(id);
+        el.closest('.card').classList.remove('selected');
+    } else {
+        _selectedSessions.add(id);
+        el.closest('.card').classList.add('selected');
+    }
+    renderSplitControls();
+}
+
 function formatTokens(n) {
     if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
     if (n >= 1000) return (n / 1000).toFixed(1) + 'k';
@@ -1300,12 +1537,17 @@ function renderCard(s) {
 
     const slug = s.slug || s.id;
 
+    const isSelected = _selectedSessions.has(slug);
+
     return `
-    <div class="card ${s.status}">
+    <div class="card ${s.status} ${isSelected ? 'selected' : ''}">
         <div class="card-header">
-            <div class="card-title">
-                <div class="card-slug">${slug}</div>
-                <div class="card-project">${s.project || 'unknown'}</div>
+            <div class="card-title" style="display:flex;flex-direction:row;align-items:flex-start;gap:0">
+                ${s.hasTerminal ? `<span class="card-select ${isSelected ? 'checked' : ''}" onclick="toggleSelectSession('${slug}', this)" data-tip="Markera f\u00f6r split view">${isSelected ? '\u2713' : ''}</span>` : ''}
+                <div>
+                    <div class="card-slug">${slug}</div>
+                    <div class="card-project">${s.project || 'unknown'}</div>
+                </div>
             </div>
             <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">
                 <span class="card-badge ${s.status}" data-tip="${s.status === 'active' ? 'Aktivitet senaste 2 min' : s.status === 'recent' ? 'Aktiv 2\u201310 min sedan' : s.status === 'idle' ? 'Vilande, 10\u201360 min sedan' : 'Avslutad, \u00f6ver 1h sedan'}">${s.status}</span>
@@ -1442,10 +1684,31 @@ function renderFilters() {
     for (const [key, f] of Object.entries(FILTERS)) {
         counts[key] = _allSessions.filter(f.fn).length;
     }
+    const activeTerminals = _allSessions.filter(s => s.hasTerminal && s.tty).length;
+    const selectedCount = _selectedSessions.size;
+
     el.innerHTML = '<span class="filter-label">Filter</span>' +
         Object.entries(FILTERS).map(([key, f]) =>
             `<button class="filter-btn ${key === _currentFilter ? 'active' : ''}" onclick="setFilter('${key}')">${f.label}<span class="filter-count">${counts[key]}</span></button>`
-        ).join('');
+        ).join('') +
+        '<span class="split-separator"></span>' +
+        '<span class="filter-label" style="margin-left:12px">Split View</span>' +
+        `<div class="split-group">` +
+            `<button class="split-btn" onclick="splitView('active','horizontal')" data-tip="Visa alla aktiva terminaler sida vid sida" ${activeTerminals < 2 ? 'disabled' : ''}>` +
+                `\u2B0C Aktiva<span class="filter-count">${activeTerminals}</span></button>` +
+            `<button class="split-btn" onclick="splitView('active','vertical')" data-tip="Visa alla aktiva terminaler staplade" ${activeTerminals < 2 ? 'disabled' : ''}>` +
+                `\u2B0D Aktiva</button>` +
+            `<button class="split-btn" onclick="splitView('active','grid')" data-tip="Visa alla aktiva terminaler i rutn\u00e4t" ${activeTerminals < 3 ? 'disabled' : ''}>` +
+                `\u25A6 Grid</button>` +
+            (selectedCount >= 2 ?
+                `<button class="split-btn split-selected" onclick="splitView('selected','horizontal')" data-tip="Splitta markerade sessioner horisontellt">\u2B0C Valda<span class="filter-count">${selectedCount}</span></button>` +
+                `<button class="split-btn split-selected" onclick="splitView('selected','vertical')" data-tip="Splitta markerade sessioner vertikalt">\u2B0D Valda</button>`
+            : '') +
+        `</div>`;
+}
+
+function renderSplitControls() {
+    renderFilters();
 }
 
 function setFilter(key) {
@@ -1540,6 +1803,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
             params = parse_qs(parsed.query)
             tty = params.get("tty", [None])[0]
             self._focus_terminal(tty)
+        elif path == "/api/split":
+            params = parse_qs(parsed.query)
+            ttys = params.get("tty", [])
+            direction = params.get("dir", ["horizontal"])[0]
+            self._split_view(ttys, direction)
         else:
             self.send_error(404)
 
@@ -1556,6 +1824,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if tty:
             ok = focus_terminal_by_tty(tty)
         result = json.dumps({"ok": ok}).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(result)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(result)
+
+    def _split_view(self, ttys, direction):
+        ok = False
+        if ttys:
+            ok = split_view_terminals(ttys, direction)
+        result = json.dumps({"ok": ok, "count": len(ttys), "direction": direction}).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(result)))
