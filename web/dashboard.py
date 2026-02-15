@@ -105,6 +105,77 @@ def session_has_terminal(session_info):
     return False
 
 
+def get_claude_tty(cwd):
+    """Find the tty of a running claude process by matching CWD."""
+    try:
+        result = subprocess.run(
+            ["ps", "-eo", "pid,tty,args"], capture_output=True, text=True, timeout=3
+        )
+        for line in result.stdout.splitlines():
+            parts = line.split(None, 2)
+            if len(parts) < 3:
+                continue
+            pid, tty, cmd = parts
+            if cmd.strip() != "claude":
+                continue
+            try:
+                real_cwd = os.readlink(f"/proc/{pid}/cwd")
+                if cwd and os.path.realpath(real_cwd) == os.path.realpath(cwd):
+                    return {"pid": pid, "tty": tty}
+            except (OSError, PermissionError):
+                continue
+    except Exception:
+        pass
+    return None
+
+
+def focus_terminal_by_tty(tty):
+    """Focus the terminal window that owns the given tty (e.g. pts/3).
+
+    Uses a title-marker technique: temporarily set a unique title on the tty,
+    find the matching window via wmctrl, then activate it with xdotool.
+    """
+    pts_path = f"/dev/{tty}"
+    if not os.path.exists(pts_path):
+        return False
+
+    marker = f"__FOCUS_{tty.replace('/', '_')}_{int(time.time())}__"
+    try:
+        # Set marker title
+        with open(pts_path, "w") as f:
+            f.write(f"\033]0;{marker}\007")
+        time.sleep(0.3)
+
+        # Find window with marker title
+        result = subprocess.run(
+            ["wmctrl", "-l"], capture_output=True, text=True, timeout=2
+        )
+        wid = None
+        for line in result.stdout.splitlines():
+            if marker in line:
+                wid = line.split()[0]
+                break
+
+        # Clear marker
+        with open(pts_path, "w") as f:
+            f.write("\033]0;\007")
+
+        if wid:
+            subprocess.run(
+                ["xdotool", "windowactivate", wid],
+                timeout=2, capture_output=True
+            )
+            return True
+    except Exception:
+        # Try to clear marker on error
+        try:
+            with open(pts_path, "w") as f:
+                f.write("\033]0;\007")
+        except Exception:
+            pass
+    return False
+
+
 def detect_launcher(jsonl_path):
     """Detect if the session was launched by AgentZero/Tess or similar."""
     try:
@@ -252,6 +323,8 @@ def parse_session(jsonl_path):
         "lastTool": "",
         "hasTerminal": False,
         "launcher": None,
+        "tty": None,
+        "terminalPid": None,
     }
 
     last_type = None
@@ -399,6 +472,11 @@ def parse_session(jsonl_path):
     # Check for active terminal (only for non-completed)
     if info["status"] != "completed":
         info["hasTerminal"] = session_has_terminal(info)
+        if info["hasTerminal"] and info["cwd"]:
+            tty_info = get_claude_tty(info["cwd"])
+            if tty_info:
+                info["tty"] = tty_info["tty"]
+                info["terminalPid"] = tty_info["pid"]
 
     _session_cache[cache_key] = info
     return info
@@ -452,6 +530,17 @@ def scan_all_sessions(max_hours=24):
                         s["status"] = "active"
                         s["hasTerminal"] = True
                         s["liveState"] = "idle"
+                        # Get tty info
+                        try:
+                            tty = subprocess.check_output(
+                                ["ps", "-o", "tty=", "-p", pid],
+                                timeout=2, stderr=subprocess.DEVNULL
+                            ).decode().strip()
+                            if tty and tty != "?":
+                                s["tty"] = tty
+                                s["terminalPid"] = pid
+                        except Exception:
+                            pass
                         upgraded = True
                         break
                 if not upgraded:
@@ -487,7 +576,19 @@ def scan_all_sessions(max_hours=24):
                         "lastTool": "",
                         "hasTerminal": True,
                         "launcher": None,
+                        "tty": None,
+                        "terminalPid": pid,
                     })
+                    # Get tty for phantom
+                    try:
+                        tty = subprocess.check_output(
+                            ["ps", "-o", "tty=", "-p", pid],
+                            timeout=2, stderr=subprocess.DEVNULL
+                        ).decode().strip()
+                        if tty and tty != "?":
+                            sessions[-1]["tty"] = tty
+                    except Exception:
+                        pass
             except (OSError, PermissionError):
                 continue
     except Exception:
@@ -1010,6 +1111,7 @@ body {
     white-space: nowrap;
 }
 .agent-toggle:hover { opacity: 0.8; }
+.terminal-link:hover { text-decoration: underline; }
 
 [data-tip] {
     position: relative;
@@ -1125,6 +1227,19 @@ body {
 <script>
 const REFRESH_MS = 5000;
 
+async function focusTerminal(tty) {
+    if (!tty) return;
+    try {
+        const res = await fetch('/api/focus?tty=' + encodeURIComponent(tty));
+        const data = await res.json();
+        if (!data.ok) {
+            console.warn('Could not focus terminal', tty);
+        }
+    } catch (err) {
+        console.error('Focus error:', err);
+    }
+}
+
 function formatTokens(n) {
     if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
     if (n >= 1000) return (n / 1000).toFixed(1) + 'k';
@@ -1207,7 +1322,7 @@ function renderCard(s) {
                 s.liveState === 'choice' ? 'V\u00e4ntar p\u00e5 val' :
                 'V\u00e4ntar'
             }</span>` : ''}
-            ${s.hasTerminal ? '<span style="color:#3fb950" data-tip="Aktiv terminal k\u00f6r denna session">\u25cf Terminal</span>' : s.status !== 'completed' ? '<span style="color:#6e7681" data-tip="Ingen terminal hittad f\u00f6r denna session">\u25cb Ingen terminal</span>' : ''}
+            ${s.hasTerminal ? `<span style="color:#3fb950;cursor:pointer;user-select:none" data-tip="Klicka f\u00f6r att v\u00e4xla till denna terminal" onclick="focusTerminal('${s.tty || ''}')">\u25cf Terminal</span>` : s.status !== 'completed' ? '<span style="color:#6e7681" data-tip="Ingen terminal hittad f\u00f6r denna session">\u25cb Ingen terminal</span>' : ''}
             ${s.launcher ? `<span style="color:#bc8cff;font-weight:600" data-tip="Startad av ${s.launcher}">\u2692 ${s.launcher}</span>` : ''}
             <span class="model">${s.modelDisplay || s.model || '?'}</span>
             ${gitInfo}
@@ -1421,6 +1536,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             params = parse_qs(parsed.query)
             hours = int(params.get("hours", [24])[0])
             self._serve_sessions(hours)
+        elif path == "/api/focus":
+            params = parse_qs(parsed.query)
+            tty = params.get("tty", [None])[0]
+            self._focus_terminal(tty)
         else:
             self.send_error(404)
 
@@ -1431,6 +1550,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(content)))
         self.end_headers()
         self.wfile.write(content)
+
+    def _focus_terminal(self, tty):
+        ok = False
+        if tty:
+            ok = focus_terminal_by_tty(tty)
+        result = json.dumps({"ok": ok}).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(result)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(result)
 
     def _serve_sessions(self, hours=24):
         sessions = scan_all_sessions(hours)
