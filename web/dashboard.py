@@ -129,6 +129,67 @@ def get_claude_tty(cwd):
     return None
 
 
+def get_tmux_sessions():
+    """Get all tmux sessions with claude_ prefix and their pane info."""
+    tmux_info = {}
+    try:
+        result = subprocess.run(
+            ["tmux", "list-panes", "-a", "-F",
+             "#{session_name} #{pane_pid} #{pane_tty} #{pane_current_path}"],
+            capture_output=True, text=True, timeout=3
+        )
+        for line in result.stdout.strip().splitlines():
+            parts = line.split(None, 3)
+            if len(parts) < 4:
+                continue
+            sess_name, pane_pid, pane_tty, pane_cwd = parts
+            # Normalize pane_tty: /dev/pts/5 -> pts/5
+            if pane_tty.startswith("/dev/"):
+                pane_tty = pane_tty[5:]
+            tmux_info[pane_tty] = {
+                "tmuxSession": sess_name,
+                "panePid": pane_pid,
+                "paneCwd": pane_cwd,
+            }
+    except Exception:
+        pass
+    return tmux_info
+
+
+def focus_tmux_session(tmux_session_name):
+    """Open a tmux session in a new terminal window or attach to it."""
+    try:
+        # Check if already attached
+        result = subprocess.run(
+            ["tmux", "list-clients", "-t", tmux_session_name, "-F", "#{client_name}"],
+            capture_output=True, text=True, timeout=2
+        )
+        if result.stdout.strip():
+            # Already attached somewhere - try to find and focus that window
+            # The title should contain the tmux session name
+            wid_result = subprocess.run(
+                ["wmctrl", "-l"], capture_output=True, text=True, timeout=2
+            )
+            for line in wid_result.stdout.splitlines():
+                if tmux_session_name in line:
+                    wid = line.split()[0]
+                    subprocess.run(
+                        ["xdotool", "windowactivate", wid],
+                        timeout=2, capture_output=True
+                    )
+                    return True
+
+        # Not attached - open in a new terminal window
+        subprocess.Popen(
+            ["xfce4-terminal", "--title", f"Terminal - ✳ {tmux_session_name}",
+             "-e", f"tmux attach-session -t {tmux_session_name}"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
+        return True
+    except Exception:
+        return False
+
+
 def focus_terminal_by_tty(tty):
     """Focus the terminal window that owns the given tty (e.g. pts/3).
 
@@ -453,6 +514,7 @@ def parse_session(jsonl_path):
         "launcher": None,
         "tty": None,
         "terminalPid": None,
+        "tmuxSession": None,
     }
 
     last_type = None
@@ -807,6 +869,7 @@ def scan_all_sessions(max_hours=24):
                         "launcher": None,
                         "tty": None,
                         "terminalPid": pid,
+                        "tmuxSession": None,
                     })
                     # Get tty for phantom
                     try:
@@ -822,6 +885,17 @@ def scan_all_sessions(max_hours=24):
                 continue
     except Exception:
         pass
+
+    # Enrich sessions with tmux info
+    tmux_sessions = get_tmux_sessions()
+    for s in sessions:
+        tty = s.get("tty")
+        if tty and tty in tmux_sessions:
+            s["tmuxSession"] = tmux_sessions[tty]["tmuxSession"]
+            # If session was launched by GTK app (claude_ prefix), mark launcher
+            tmux_name = tmux_sessions[tty]["tmuxSession"]
+            if tmux_name.startswith("claude_") and not s.get("launcher"):
+                s["launcher"] = "GTK/tmux"
 
     # Sort: active first, then recent, then by last timestamp descending
     status_order = {"active": 0, "recent": 1, "idle": 2, "completed": 3}
@@ -1074,6 +1148,7 @@ body {
 
 .card.recent { border-left-color: #d29922; }
 .card.idle { border-left-color: #484f58; }
+.card.tmux { border-left-color: #d2a8ff; }
 
 @keyframes card-pulse {
     0%, 100% { box-shadow: 0 0 0 rgba(63, 185, 80, 0); }
@@ -1528,7 +1603,17 @@ body {
 <script>
 const REFRESH_MS = 5000;
 
-async function focusTerminal(tty) {
+async function focusTerminal(tty, tmuxSession) {
+    if (tmuxSession) {
+        try {
+            const res = await fetch('/api/focus-tmux?session=' + encodeURIComponent(tmuxSession));
+            const data = await res.json();
+            if (!data.ok) console.warn('Could not focus tmux session', tmuxSession);
+        } catch (err) {
+            console.error('Focus tmux error:', err);
+        }
+        return;
+    }
     if (!tty) return;
     try {
         const res = await fetch('/api/focus?tty=' + encodeURIComponent(tty));
@@ -1644,7 +1729,7 @@ function renderCard(s) {
     const isSelected = _selectedSessions.has(slug);
 
     return `
-    <div class="card ${s.status} ${isSelected ? 'selected' : ''}">
+    <div class="card ${s.status} ${s.tmuxSession ? 'tmux' : ''} ${isSelected ? 'selected' : ''}">
         <div class="card-header">
             <div class="card-title" style="display:flex;flex-direction:row;align-items:flex-start;gap:0">
                 ${s.hasTerminal ? `<span class="card-select ${isSelected ? 'checked' : ''}" onclick="toggleSelectSession('${slug}', this)" data-tip="Markera f\u00f6r split view">${isSelected ? '\u2713' : ''}</span>` : ''}
@@ -1668,7 +1753,8 @@ function renderCard(s) {
                 s.liveState === 'choice' ? 'V\u00e4ntar p\u00e5 val' :
                 'V\u00e4ntar'
             }</span>` : ''}
-            ${s.hasTerminal ? `<span style="color:#3fb950;cursor:pointer;user-select:none" data-tip="Klicka f\u00f6r att v\u00e4xla till denna terminal" onclick="focusTerminal('${s.tty || ''}')">\u25cf Terminal</span>` : s.status !== 'completed' ? '<span style="color:#6e7681" data-tip="Ingen terminal hittad f\u00f6r denna session">\u25cb Ingen terminal</span>' : ''}
+            ${s.hasTerminal ? `<span style="color:#3fb950;cursor:pointer;user-select:none" data-tip="Klicka f\u00f6r att ${s.tmuxSession ? 'attach:a till tmux-session' : 'v\u00e4xla till terminalen'}" onclick="focusTerminal('${s.tty || ''}', ${s.tmuxSession ? "'" + s.tmuxSession + "'" : 'null'})">\u25cf ${s.tmuxSession ? 'tmux' : 'Terminal'}</span>` : s.status !== 'completed' ? '<span style="color:#6e7681" data-tip="Ingen terminal hittad f\u00f6r denna session">\u25cb Ingen terminal</span>' : ''}
+            ${s.tmuxSession ? `<span style="color:#d2a8ff;font-size:11px;font-family:'SF Mono','Fira Code',monospace" data-tip="tmux session: ${s.tmuxSession}. Isolerad milj\u00f6 startad via GTK-app eller AgentZero">\u2630 ${s.tmuxSession}</span>` : ''}
             ${s.launcher ? `<span style="color:#bc8cff;font-weight:600" data-tip="Startad av ${s.launcher}">\u2692 ${s.launcher}</span>` : ''}
             <span class="model">${s.modelDisplay || s.model || '?'}</span>
             ${gitInfo}
@@ -1907,6 +1993,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             params = parse_qs(parsed.query)
             tty = params.get("tty", [None])[0]
             self._focus_terminal(tty)
+        elif path == "/api/focus-tmux":
+            params = parse_qs(parsed.query)
+            tmux_name = params.get("session", [None])[0]
+            self._focus_tmux(tmux_name)
         elif path == "/api/split":
             params = parse_qs(parsed.query)
             ttys = params.get("tty", [])
@@ -1927,6 +2017,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
         ok = False
         if tty:
             ok = focus_terminal_by_tty(tty)
+        result = json.dumps({"ok": ok}).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(result)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(result)
+
+    def _focus_tmux(self, tmux_name):
+        ok = False
+        if tmux_name:
+            ok = focus_tmux_session(tmux_name)
         result = json.dumps({"ok": ok}).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
