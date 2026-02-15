@@ -417,6 +417,9 @@ def parse_session(jsonl_path):
     if cache_key in _session_cache:
         cached = _session_cache[cache_key]
         cached["status"] = classify_session(stat.st_mtime)
+        # Always refresh liveState for non-completed sessions
+        if cached["status"] in ("active", "recent"):
+            _refresh_live_state(cached)
         return cached
 
     info = {
@@ -607,6 +610,91 @@ def parse_session(jsonl_path):
     return info
 
 
+def _refresh_live_state(session_info):
+    """Re-read the last entries from the JSONL to determine current live state.
+
+    This is used when a session gets upgraded from completed/idle to active
+    because a running terminal was detected. The cached liveState may be stale.
+    """
+    # Find the JSONL path from the session's fullId
+    full_id = session_info.get("fullId", "")
+    if not full_id or full_id.startswith("pid-"):
+        session_info["liveState"] = "idle"
+        return
+
+    # Search for the JSONL file
+    jsonl_path = None
+    if CLAUDE_PROJECTS.exists():
+        for f in CLAUDE_PROJECTS.glob(f"*/{full_id}.jsonl"):
+            jsonl_path = f
+            break
+
+    if not jsonl_path or not jsonl_path.exists():
+        session_info["liveState"] = "idle"
+        return
+
+    # Read last few lines to determine state
+    last_type = None
+    last_content = []
+    try:
+        # Read from the end - only need last entries
+        with open(jsonl_path, "rb") as f:
+            # Seek to last 50KB (enough for last few entries)
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - 50000))
+            if f.tell() > 0:
+                f.readline()  # skip partial line
+            for line in f:
+                try:
+                    entry = json.loads(line)
+                    etype = entry.get("type")
+                    if etype in ("user", "assistant"):
+                        last_type = etype
+                        if etype == "assistant":
+                            last_content = entry.get("message", {}).get("content", [])
+                        else:
+                            last_content = []
+                except json.JSONDecodeError:
+                    continue
+    except Exception:
+        pass
+
+    # Determine live state
+    try:
+        if last_type == "user":
+            session_info["liveState"] = "working"
+        elif last_type == "assistant":
+            has_ask = any(
+                b.get("type") == "tool_use" and b.get("name") == "AskUserQuestion"
+                for b in last_content
+            )
+            has_task = any(
+                b.get("type") == "tool_use" and b.get("name") == "Task"
+                for b in last_content
+            )
+            if has_ask:
+                session_info["liveState"] = "choice"
+            elif has_task:
+                session_info["liveState"] = "working"
+                running_agent = next(
+                    (b.get("input", {}).get("subagent_type", "") for b in last_content
+                     if b.get("type") == "tool_use" and b.get("name") == "Task"), ""
+                )
+                session_info["lastTool"] = f"Agent: {running_agent}" if running_agent else ""
+            else:
+                session_info["liveState"] = "idle"
+                last_tool = next(
+                    (b.get("name", "") for b in reversed(last_content)
+                     if b.get("type") == "tool_use"), ""
+                )
+                session_info["lastTool"] = last_tool
+        else:
+            session_info["liveState"] = "idle"
+    except Exception:
+        session_info["liveState"] = "idle"
+
+
 def scan_all_sessions(max_hours=24):
     sessions = []
     cutoff = time.time() - (max_hours * 3600)
@@ -648,13 +736,14 @@ def scan_all_sessions(max_hours=24):
                 # Check if this process already matches a known active session
                 if os.path.realpath(real_cwd) in matched_cwds:
                     continue
-                # Also try to match against completed sessions to upgrade them
+                # Also try to match against non-active sessions to upgrade them
                 upgraded = False
                 for s in sessions:
-                    if s["status"] == "completed" and s["cwd"] and os.path.realpath(s["cwd"]) == os.path.realpath(real_cwd):
+                    if s["status"] in ("completed", "idle", "recent") and s["cwd"] and os.path.realpath(s["cwd"]) == os.path.realpath(real_cwd):
                         s["status"] = "active"
                         s["hasTerminal"] = True
-                        s["liveState"] = "idle"
+                        # Re-read liveState from the actual JSONL transcript
+                        _refresh_live_state(s)
                         # Get tty info
                         try:
                             tty = subprocess.check_output(
@@ -1555,7 +1644,7 @@ function renderCard(s) {
             </div>
         </div>
         <div class="card-meta">
-            ${s.status === 'active' ? `<span class="live-state ${s.liveState}" data-tip="${
+            ${(s.hasTerminal || s.status === 'active') ? `<span class="live-state ${s.liveState}" data-tip="${
                 s.liveState === 'working' ? 'Claude arbetar just nu' + (s.lastTool ? ' (' + s.lastTool + ')' : '') :
                 s.liveState === 'choice' ? 'V\u00e4ntar p\u00e5 ditt val (fr\u00e5ga visas i terminalen)' :
                 'V\u00e4ntar p\u00e5 ditt meddelande'
