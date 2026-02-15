@@ -1,0 +1,2 @@
+libtmux>=0.37.0
+PyGObject>=3.48.0
