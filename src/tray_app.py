@@ -319,7 +319,7 @@ class SessionDashboard:
 
     def _on_open_web_dashboard(self, _):
         """Start web dashboard if needed and open in browser."""
-        dashboard_script = "/tmp/claude-pulse/dashboard.py"
+        dashboard_script = "/mnt/mac/Users/dalu/AI-Projekt/lab/agent-session-dashboard/web/dashboard.py"
         port = 7685
         try:
             # Check if already running
