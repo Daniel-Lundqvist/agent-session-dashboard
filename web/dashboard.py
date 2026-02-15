@@ -422,6 +422,77 @@ def scan_all_sessions(max_hours=24):
         except Exception:
             continue
 
+    # Detect orphan Claude processes (running but no active/recent session)
+    try:
+        result = subprocess.run(
+            ["ps", "aux"], capture_output=True, text=True, timeout=3
+        )
+        matched_cwds = {os.path.realpath(s["cwd"]) for s in sessions if s["status"] in ("active", "recent") and s["cwd"]}
+        for line in result.stdout.splitlines():
+            parts = line.split(None, 10)
+            if len(parts) < 11:
+                continue
+            pid = parts[1]
+            cmd = parts[10]
+            # Match standalone "claude" processes (not dashboard, not grep, not subprocesses)
+            if not (cmd.strip() == "claude" or cmd.startswith("claude ")):
+                continue
+            if "dashboard" in cmd or "pulse" in cmd or "python" in cmd:
+                continue
+            try:
+                cwd_link = f"/proc/{pid}/cwd"
+                real_cwd = os.readlink(cwd_link)
+                # Check if this process already matches a known active session
+                if os.path.realpath(real_cwd) in matched_cwds:
+                    continue
+                # Also try to match against completed sessions to upgrade them
+                upgraded = False
+                for s in sessions:
+                    if s["status"] == "completed" and s["cwd"] and os.path.realpath(s["cwd"]) == os.path.realpath(real_cwd):
+                        s["status"] = "active"
+                        s["hasTerminal"] = True
+                        s["liveState"] = "idle"
+                        upgraded = True
+                        break
+                if not upgraded:
+                    # Create a phantom session entry for this terminal
+                    project = os.path.basename(real_cwd)
+                    branch, dirty = get_git_info(real_cwd)
+                    sessions.append({
+                        "id": pid[:8],
+                        "fullId": f"pid-{pid}",
+                        "status": "active",
+                        "cwd": real_cwd,
+                        "project": project,
+                        "model": "",
+                        "modelDisplay": "",
+                        "version": "",
+                        "gitBranch": branch,
+                        "gitDirty": dirty,
+                        "slug": f"terminal-{pid}",
+                        "firstTimestamp": "",
+                        "lastTimestamp": "",
+                        "durationMinutes": 0,
+                        "tokens": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0},
+                        "tokensTotal": 0,
+                        "cost": 0,
+                        "tools": 0,
+                        "agents": 0,
+                        "agentTypes": [],
+                        "subagentFiles": 0,
+                        "messages": 0,
+                        "linesAdded": 0,
+                        "linesRemoved": 0,
+                        "liveState": "idle",
+                        "lastTool": "",
+                        "hasTerminal": True,
+                        "launcher": None,
+                    })
+            except (OSError, PermissionError):
+                continue
+    except Exception:
+        pass
+
     # Sort: active first, then recent, then by last timestamp descending
     status_order = {"active": 0, "recent": 1, "idle": 2, "completed": 3}
     sessions.sort(key=lambda s: (status_order.get(s["status"], 9), -(
