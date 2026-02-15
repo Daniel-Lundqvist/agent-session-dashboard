@@ -737,26 +737,41 @@ def scan_all_sessions(max_hours=24):
                 if os.path.realpath(real_cwd) in matched_cwds:
                     continue
                 # Also try to match against non-active sessions to upgrade them
+                # Pick the MOST RECENT session with matching CWD
                 upgraded = False
-                for s in sessions:
-                    if s["status"] in ("completed", "idle", "recent") and s["cwd"] and os.path.realpath(s["cwd"]) == os.path.realpath(real_cwd):
-                        s["status"] = "active"
-                        s["hasTerminal"] = True
-                        # Re-read liveState from the actual JSONL transcript
-                        _refresh_live_state(s)
-                        # Get tty info
+                candidates = [
+                    s for s in sessions
+                    if s["status"] in ("completed", "idle", "recent")
+                    and s["cwd"]
+                    and os.path.realpath(s["cwd"]) == os.path.realpath(real_cwd)
+                ]
+                if candidates:
+                    # Sort by lastTimestamp descending, pick most recent
+                    def _ts(s):
                         try:
-                            tty = subprocess.check_output(
-                                ["ps", "-o", "tty=", "-p", pid],
-                                timeout=2, stderr=subprocess.DEVNULL
-                            ).decode().strip()
-                            if tty and tty != "?":
-                                s["tty"] = tty
-                                s["terminalPid"] = pid
+                            return datetime.fromisoformat(
+                                s["lastTimestamp"].replace("Z", "+00:00")
+                            ).timestamp() if s["lastTimestamp"] else 0
                         except Exception:
-                            pass
-                        upgraded = True
-                        break
+                            return 0
+                    candidates.sort(key=_ts, reverse=True)
+                    s = candidates[0]
+                    s["status"] = "active"
+                    s["hasTerminal"] = True
+                    # Re-read liveState from the actual JSONL transcript
+                    _refresh_live_state(s)
+                    # Get tty info
+                    try:
+                        tty = subprocess.check_output(
+                            ["ps", "-o", "tty=", "-p", pid],
+                            timeout=2, stderr=subprocess.DEVNULL
+                        ).decode().strip()
+                        if tty and tty != "?":
+                            s["tty"] = tty
+                            s["terminalPid"] = pid
+                    except Exception:
+                        pass
+                    upgraded = True
                 if not upgraded:
                     # Create a phantom session entry for this terminal
                     project = os.path.basename(real_cwd)
