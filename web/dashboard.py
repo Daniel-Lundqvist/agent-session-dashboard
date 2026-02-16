@@ -1678,6 +1678,85 @@ body {
 .agent-toggle:hover { opacity: 0.8; }
 .terminal-link:hover { text-decoration: underline; }
 
+/* Minimal/row view */
+.sessions.list-view {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 12px 24px;
+}
+.row-item {
+    display: grid;
+    grid-template-columns: 6px 200px 160px 70px 80px 70px 60px 60px 1fr;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    background: #161b22;
+    border-radius: 4px;
+    font-size: 12px;
+    color: #c9d1d9;
+    cursor: default;
+    border: 1px solid transparent;
+}
+.row-item:hover { border-color: #30363d; background: #1c2129; }
+.row-indicator { width: 6px; height: 6px; border-radius: 50%; }
+.row-indicator.active { background: #3fb950; }
+.row-indicator.recent { background: #d29922; }
+.row-indicator.idle { background: #484f58; }
+.row-indicator.completed { background: #30363d; }
+.row-slug { font-weight: 600; color: #e6edf3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row-project { color: #8b949e; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row-cost { color: #3fb950; text-align: right; font-family: 'SF Mono','Fira Code',monospace; }
+.row-tokens { color: #8b949e; text-align: right; font-family: 'SF Mono','Fira Code',monospace; }
+.row-tools { color: #d2a8ff; text-align: right; }
+.row-time { color: #8b949e; text-align: right; }
+.row-actions { display: flex; gap: 8px; justify-content: flex-end; align-items: center; }
+.row-actions span { cursor: pointer; }
+.row-header {
+    display: grid;
+    grid-template-columns: 6px 200px 160px 70px 80px 70px 60px 60px 1fr;
+    gap: 8px;
+    padding: 4px 10px;
+    font-size: 11px;
+    color: #6e7681;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    border-bottom: 1px solid #21262d;
+    margin-bottom: 4px;
+}
+
+/* View toggle + project filter */
+.view-toggle {
+    display: inline-flex;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    overflow: hidden;
+    margin-left: 12px;
+}
+.view-toggle button {
+    background: #21262d;
+    color: #8b949e;
+    border: none;
+    padding: 4px 10px;
+    font-size: 12px;
+    cursor: pointer;
+    font-family: inherit;
+}
+.view-toggle button:hover { background: #30363d; color: #c9d1d9; }
+.view-toggle button.active { background: #388bfd26; color: #58a6ff; }
+.project-filter {
+    background: #21262d;
+    color: #c9d1d9;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    padding: 4px 8px;
+    font-size: 12px;
+    font-family: inherit;
+    margin-left: 8px;
+    cursor: pointer;
+}
+.project-filter:hover { border-color: #58a6ff; }
+
 .split-separator {
     width: 1px;
     height: 24px;
@@ -2127,6 +2206,30 @@ function renderCard(s) {
     </div>`;
 }
 
+function renderRow(s) {
+    const slug = s.slug || s.id;
+    const costStr = s.cost >= 1 ? '$' + s.cost.toFixed(0) : '$' + s.cost.toFixed(2);
+    const resumeBtn = !s.hasTerminal && s.fullId && s.status !== 'completed'
+        ? `<span style="color:#58a6ff" onclick="resumeSession('${s.fullId}', '${(s.cwd||'').replace(/'/g, "\\\\'")}')" data-tip="\u00c5teruppta">&#x21bb;</span>`
+        : '';
+    const termBtn = s.hasTerminal
+        ? `<span style="color:#3fb950" onclick="focusTerminal('${s.tty||''}', ${s.tmuxSession ? "'" + s.tmuxSession + "'" : 'null'})" data-tip="Terminal">\u25cf</span>`
+        : '';
+    const liveIcon = s.liveState === 'working' ? '\uD83D\uDD35' : s.liveState === 'choice' ? '\uD83D\uDFE0' : '';
+    return `
+    <div class="row-item" data-fullid="${s.fullId}">
+        <span class="row-indicator ${s.status}"></span>
+        <span class="row-slug" data-tip="${s.fullId}">${liveIcon} ${slug}</span>
+        <span class="row-project" data-tip="${s.cwd || ''}">${s.project || '?'}</span>
+        <span class="row-cost">${costStr}</span>
+        <span class="row-tokens">${formatTokens(s.tokensTotal)}</span>
+        <span class="row-tools">${s.tools}</span>
+        <span class="row-time">${s.durationMinutes}m</span>
+        <span style="color:#6e7681;font-size:11px">${formatWhen(s.lastTimestamp)}</span>
+        <span class="row-actions">${termBtn}${resumeBtn}<span style="color:#58a6ff;cursor:pointer" onclick="toggleSummary(this, '${s.fullId}')" data-tip="Sammanfattning">\u2728</span></span>
+    </div>`;
+}
+
 function renderPlan(plan) {
     const el = document.getElementById('plan-panel');
     if (!plan) { el.style.display = 'none'; return; }
@@ -2185,6 +2288,8 @@ let _openAgentMenu = null;
 let _openSummaryId = null;
 let _allSessions = [];
 let _currentFilter = 'default';
+let _currentView = 'cards';
+let _currentProject = '';
 
 const _notSummary = s => !s.isSummarySession;
 const FILTERS = {
@@ -2207,10 +2312,21 @@ function renderFilters() {
     const activeTerminals = _allSessions.filter(s => s.hasTerminal && s.tty && !s.isSummarySession).length;
     const selectedCount = _selectedSessions.size;
 
+    // Collect unique projects
+    const projects = [...new Set(_allSessions.filter(s => !s.isSummarySession && s.project).map(s => s.project))].sort();
+
     el.innerHTML = '<span class="filter-label">Filter</span>' +
         Object.entries(FILTERS).map(([key, f]) =>
             `<button class="filter-btn ${key === _currentFilter ? 'active' : ''}" onclick="setFilter('${key}')">${f.label}<span class="filter-count">${counts[key]}</span></button>`
         ).join('') +
+        (projects.length > 1 ? `<select class="project-filter" onchange="setProject(this.value)" data-tip="Filtrera per projekt/arbetsmapp">` +
+            `<option value=""${!_currentProject ? ' selected' : ''}>Alla projekt</option>` +
+            projects.map(p => `<option value="${p}"${_currentProject === p ? ' selected' : ''}>${p}</option>`).join('') +
+        `</select>` : '') +
+        `<div class="view-toggle">` +
+            `<button class="${_currentView === 'cards' ? 'active' : ''}" onclick="setView('cards')" data-tip="Kortvy">\u25A6 Kort</button>` +
+            `<button class="${_currentView === 'list' ? 'active' : ''}" onclick="setView('list')" data-tip="Radvy (kompakt)">\u2630 Lista</button>` +
+        `</div>` +
         '<span class="split-separator"></span>' +
         '<span class="filter-label" style="margin-left:12px">Split View</span>' +
         `<div class="split-group">` +
@@ -2237,9 +2353,24 @@ function setFilter(key) {
     renderFilters();
 }
 
+function setView(view) {
+    _currentView = view;
+    applyFilter();
+    renderFilters();
+}
+
+function setProject(project) {
+    _currentProject = project;
+    applyFilter();
+    renderFilters();
+}
+
 function applyFilter() {
     const fn = FILTERS[_currentFilter]?.fn || (() => true);
-    const filtered = _allSessions.filter(fn);
+    let filtered = _allSessions.filter(fn);
+    if (_currentProject) {
+        filtered = filtered.filter(s => s.project === _currentProject);
+    }
     _renderSessionCards(filtered);
 }
 
@@ -2271,8 +2402,19 @@ function _renderSessionCards(sessions) {
 
     if (!sessions.length) {
         el.innerHTML = '<div class="empty-state"><h2>Inga sessioner matchar filtret</h2><p>Prova ett annat filter.</p></div>';
+        el.className = 'sessions';
         return;
     }
+
+    if (_currentView === 'list') {
+        el.className = 'sessions list-view';
+        el.innerHTML =
+            `<div class="row-header"><span></span><span>Session</span><span>Projekt</span><span>Kostnad</span><span>Tokens</span><span>Tools</span><span>Tid</span><span>Senast</span><span style="text-align:right">\u00c5tg\u00e4rd</span></div>` +
+            sessions.map(renderRow).join('');
+        return;
+    }
+
+    el.className = 'sessions';
     el.innerHTML = sessions.map(renderCard).join('');
 
     // Restore open menu
