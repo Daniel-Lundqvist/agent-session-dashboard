@@ -676,10 +676,12 @@ def parse_session(jsonl_path):
         "terminalPid": None,
         "tmuxSession": None,
         "ttydUrl": None,
+        "isSummarySession": False,
     }
 
     last_type = None
     last_content = []
+    first_user_text_checked = False
 
     try:
         with open(jsonl_path, "r") as f:
@@ -702,6 +704,23 @@ def parse_session(jsonl_path):
                         if sid:
                             info["fullId"] = sid
                             info["id"] = sid[:8]
+
+                    # Detect summary sessions by first user message
+                    if not first_user_text_checked:
+                        first_user_text_checked = True
+                        msg = entry.get("message", {})
+                        if isinstance(msg, dict):
+                            content = msg.get("content", "")
+                            text = ""
+                            if isinstance(content, list):
+                                for b in content:
+                                    if isinstance(b, dict) and b.get("type") == "text":
+                                        text = b.get("text", "")
+                                        break
+                            else:
+                                text = str(content)
+                            if "Sammanfatta vad sessionen handlade om" in text:
+                                info["isSummarySession"] = True
 
                     ts = entry.get("timestamp", "")
                     if ts:
@@ -2111,14 +2130,16 @@ let _openSummaryId = null;
 let _allSessions = [];
 let _currentFilter = 'default';
 
+const _notSummary = s => !s.isSummarySession;
 const FILTERS = {
-    'all':       { label: 'Alla',                    fn: () => true },
-    'active':    { label: 'Aktiva',                  fn: s => s.status === 'active' },
-    'default':   { label: 'Senaste (+1h)',           fn: s => s.status !== 'completed' },
-    'today':     { label: 'Idag',                    fn: s => { const d = new Date(s.lastTimestamp); const t = new Date(); return d.toDateString() === t.toDateString(); }},
-    'no-empty':  { label: 'Med aktivitet',           fn: s => s.tools > 0 || s.messages > 3 },
-    'expensive': { label: 'Dyra (>$5)',              fn: s => s.cost > 5 },
-    'terminal': { label: 'Med terminal',            fn: s => s.hasTerminal },
+    'active':    { label: 'Aktiva',                  fn: s => _notSummary(s) && s.status === 'active' },
+    'default':   { label: 'Senaste (+1h)',           fn: s => _notSummary(s) && s.status !== 'completed' },
+    'today':     { label: 'Idag',                    fn: s => _notSummary(s) && (() => { const d = new Date(s.lastTimestamp); const t = new Date(); return d.toDateString() === t.toDateString(); })() },
+    '7days':     { label: '7 dagar',                 fn: s => _notSummary(s) && (Date.now() - new Date(s.lastTimestamp).getTime()) < 7 * 86400000 },
+    'no-empty':  { label: 'Med aktivitet',           fn: s => _notSummary(s) && (s.tools > 0 || s.messages > 3) },
+    'expensive': { label: 'Dyra (>$5)',              fn: s => _notSummary(s) && s.cost > 5 },
+    'terminal':  { label: 'Med terminal',            fn: s => _notSummary(s) && s.hasTerminal },
+    'all':       { label: 'Alla (inkl. auto)',       fn: () => true },
 };
 
 function renderFilters() {
@@ -2264,7 +2285,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._serve_html()
         elif path == "/api/sessions":
             params = parse_qs(parsed.query)
-            hours = int(params.get("hours", [24])[0])
+            hours = int(params.get("hours", [168])[0])
             self._serve_sessions(hours)
         elif path == "/api/resume":
             params = parse_qs(parsed.query)
@@ -2393,7 +2414,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(result)
 
-    def _serve_sessions(self, hours=24):
+    def _serve_sessions(self, hours=168):
         sessions = scan_all_sessions(hours)
 
         summary = {
