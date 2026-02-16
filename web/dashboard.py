@@ -28,6 +28,9 @@ TTYD_BASE_PORT = 7681
 # Cache for active terminal PIDs - refreshed every scan
 _active_pids_cache = {"timestamp": 0, "pids": {}}
 
+# Cache for session summaries: fullId -> {"summary": [...], "timestamp": float}
+_summary_cache = {}
+
 # ttyd processes: tmux_session_name -> {"pid": int, "port": int}
 _ttyd_processes = {}
 _ttyd_next_port = TTYD_BASE_PORT
@@ -252,6 +255,99 @@ def get_ttyd_url(tmux_session_name):
     except OSError:
         del _ttyd_processes[tmux_session_name]
         return None
+
+
+def resume_session(full_id, cwd=None):
+    """Open a new terminal and resume a Claude session by its full ID."""
+    try:
+        cmd = f"claude --dangerously-skip-permissions --resume {full_id}"
+        title = f"Terminal - \u2733 resume-{full_id[:8]}"
+        terminal_cmd = ["xfce4-terminal", "--title", title]
+        if cwd and os.path.isdir(cwd):
+            terminal_cmd += ["--working-directory", cwd]
+        terminal_cmd += ["-e", cmd]
+        subprocess.Popen(
+            terminal_cmd,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
+        return True
+    except Exception:
+        return False
+
+
+def generate_summary(full_id):
+    """Generate a session summary using claude CLI with haiku model."""
+    if full_id in _summary_cache:
+        return _summary_cache[full_id]["summary"]
+
+    # Find the JSONL file
+    jsonl_path = None
+    for f in CLAUDE_PROJECTS.glob(f"*/{full_id}.jsonl"):
+        jsonl_path = f
+        break
+    if not jsonl_path or not jsonl_path.exists():
+        return None
+
+    # Extract user messages for context
+    user_messages = []
+    try:
+        with open(jsonl_path, "r") as f:
+            for line in f:
+                try:
+                    entry = json.loads(line)
+                    if entry.get("type") == "user":
+                        msg = entry.get("message", {})
+                        if isinstance(msg, dict):
+                            content = msg.get("content", "")
+                            if isinstance(content, list):
+                                text = " ".join(
+                                    b.get("text", "") for b in content
+                                    if isinstance(b, dict) and b.get("type") == "text"
+                                )
+                            else:
+                                text = str(content)
+                        else:
+                            text = str(msg)
+                        text = text.strip()
+                        if text and len(text) > 5:
+                            user_messages.append(text[:300])
+                except (json.JSONDecodeError, KeyError):
+                    continue
+    except Exception:
+        return None
+
+    if not user_messages:
+        return None
+
+    # Build a concise context string (max ~2000 chars)
+    context = "\n---\n".join(user_messages[:20])
+    if len(context) > 2000:
+        context = context[:2000]
+
+    prompt = (
+        "Du f\u00e5r en lista med anv\u00e4ndarmeddelanden fr\u00e5n en Claude Code-session. "
+        "Sammanfatta vad sessionen handlade om som 1-5 korta punkter. "
+        "Varje punkt ska ha formatet: \"Rubrik\" - kort beskrivning. "
+        "Svara BARA med punkterna, inget annat. Skriv p\u00e5 svenska.\n\n"
+        f"{context}"
+    )
+
+    try:
+        env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+        result = subprocess.run(
+            ["claude", "--model", "haiku", "-p", prompt],
+            capture_output=True, text=True, timeout=30, env=env
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            summary = result.stdout.strip()
+            _summary_cache[full_id] = {
+                "summary": summary,
+                "timestamp": time.time(),
+            }
+            return summary
+    except Exception:
+        pass
+    return None
 
 
 def focus_terminal_by_tty(tty):
@@ -1463,6 +1559,27 @@ body {
     box-shadow: 0 8px 24px rgba(0,0,0,0.4);
 }
 .agent-list.open { display: block; }
+.summary-list {
+    display: none;
+    position: absolute;
+    bottom: 100%;
+    right: 0;
+    z-index: 50;
+    background: #2d333b;
+    border: 1px solid #444c56;
+    border-radius: 8px;
+    padding: 10px 14px;
+    min-width: 280px;
+    max-width: 420px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+    font-size: 12px;
+    line-height: 1.5;
+    color: #c9d1d9;
+    white-space: pre-wrap;
+}
+.summary-list.open { display: block; }
+.summary-list .loading { color: #8b949e; font-style: italic; }
+.summary-list .summary-point { padding: 3px 0; }
 .agent-item {
     padding: 6px 12px;
     display: flex;
@@ -1695,6 +1812,52 @@ async function focusTerminal(tty, tmuxSession) {
     }
 }
 
+const _summaryCache = {};
+async function toggleSummary(el, fullId) {
+    const list = el.closest('.stat').querySelector('.summary-list');
+    if (!list) return;
+    if (list.classList.contains('open')) {
+        list.classList.remove('open');
+        return;
+    }
+    // Close other open popups
+    document.querySelectorAll('.summary-list.open, .agent-list.open').forEach(e => e.classList.remove('open'));
+    list.classList.add('open');
+    if (_summaryCache[fullId]) {
+        list.innerHTML = _summaryCache[fullId];
+        return;
+    }
+    list.innerHTML = '<span class="loading">Genererar sammanfattning...</span>';
+    try {
+        const res = await fetch('/api/summary?id=' + encodeURIComponent(fullId));
+        const data = await res.json();
+        if (data.ok && data.summary) {
+            const html = data.summary.split('\\n').filter(l => l.trim())
+                .map(l => `<div class="summary-point">${l.replace(/</g,'&lt;')}</div>`).join('');
+            list.innerHTML = html;
+            _summaryCache[fullId] = html;
+        } else {
+            list.innerHTML = '<span class="loading">Kunde inte generera sammanfattning.</span>';
+        }
+    } catch (err) {
+        list.innerHTML = '<span class="loading">Fel: ' + err.message + '</span>';
+    }
+}
+
+async function resumeSession(fullId, cwd) {
+    try {
+        const params = new URLSearchParams({id: fullId});
+        if (cwd) params.set('cwd', cwd);
+        const res = await fetch('/api/resume?' + params.toString());
+        const data = await res.json();
+        if (!data.ok) {
+            alert('Kunde inte \u00e5teruppta sessionen.');
+        }
+    } catch (err) {
+        console.error('Resume error:', err);
+    }
+}
+
 async function openTtyd(tmuxSession) {
     try {
         const res = await fetch('/api/ttyd-start?session=' + encodeURIComponent(tmuxSession));
@@ -1813,7 +1976,7 @@ function renderCard(s) {
     const isSelected = _selectedSessions.has(slug);
 
     return `
-    <div class="card ${s.status} ${s.tmuxSession ? 'tmux' : ''} ${isSelected ? 'selected' : ''}">
+    <div class="card ${s.status} ${s.tmuxSession ? 'tmux' : ''} ${isSelected ? 'selected' : ''}" data-fullid="${s.fullId}">
         <div class="card-header">
             <div class="card-title" style="display:flex;flex-direction:row;align-items:flex-start;gap:0">
                 ${s.hasTerminal ? `<span class="card-select ${isSelected ? 'checked' : ''}" onclick="toggleSelectSession('${slug}', this)" data-tip="Markera f\u00f6r split view">${isSelected ? '\u2713' : ''}</span>` : ''}
@@ -1837,7 +2000,7 @@ function renderCard(s) {
                 s.liveState === 'choice' ? 'V\u00e4ntar p\u00e5 val' :
                 'V\u00e4ntar'
             }</span>` : ''}
-            ${s.hasTerminal ? `<span style="color:#3fb950;cursor:pointer;user-select:none" data-tip="Klicka f\u00f6r att ${s.tmuxSession ? 'attach:a till tmux-session' : 'v\u00e4xla till terminalen'}" onclick="focusTerminal('${s.tty || ''}', ${s.tmuxSession ? "'" + s.tmuxSession + "'" : 'null'})">\u25cf ${s.tmuxSession ? 'tmux' : 'Terminal'}</span>` : s.status !== 'completed' ? '<span style="color:#6e7681" data-tip="Ingen terminal hittad f\u00f6r denna session">\u25cb Ingen terminal</span>' : ''}
+            ${s.hasTerminal ? `<span style="color:#3fb950;cursor:pointer;user-select:none" data-tip="Klicka f\u00f6r att ${s.tmuxSession ? 'attach:a till tmux-session' : 'v\u00e4xla till terminalen'}" onclick="focusTerminal('${s.tty || ''}', ${s.tmuxSession ? "'" + s.tmuxSession + "'" : 'null'})">\u25cf ${s.tmuxSession ? 'tmux' : 'Terminal'}</span>` : s.fullId && s.status !== 'completed' ? `<span style="color:#58a6ff;cursor:pointer;user-select:none" data-tip="\u00c5teruppta sessionen i en ny terminal (claude --resume)" onclick="resumeSession('${s.fullId}', '${(s.cwd || '').replace(/'/g, "\\\\'")}')">&#x21bb; Resume</span>` : s.status !== 'completed' ? '<span style="color:#6e7681">\u25cb Ingen terminal</span>' : ''}
             ${s.tmuxSession ? `<span style="color:#d2a8ff;font-size:11px;font-family:'SF Mono','Fira Code',monospace" data-tip="tmux session: ${s.tmuxSession}. Isolerad milj\u00f6 startad via GTK-app eller AgentZero">\u2630 ${s.tmuxSession}</span>` : ''}
             ${s.tmuxSession ? `<span style="cursor:pointer;user-select:none;font-size:12px;${s.ttydUrl ? 'color:#3fb950' : 'color:#8b949e'}" data-tip="${s.ttydUrl ? 'ttyd k\u00f6r - klicka f\u00f6r att \u00f6ppna i webbl\u00e4sare' : '\u00d6ppna i webbl\u00e4sare via ttyd (remote access)'}" onclick="openTtyd('${s.tmuxSession}')">\uD83D\uDDA5\uFE0F ttyd${s.ttydUrl ? ' \u25cf' : ''}</span>` : ''}
             ${s.launcher ? `<span style="color:#bc8cff;font-weight:600" data-tip="Startad av ${s.launcher}">\u2692 ${s.launcher}</span>` : ''}
@@ -1871,6 +2034,10 @@ function renderCard(s) {
             <div class="stat">
                 <span class="stat-label" data-tip="Antal meddelanden fr\u00e5n dig i sessionen">Messages</span>
                 <span class="stat-value duration">${s.messages}</span>
+            </div>
+            <div class="stat" style="position:relative">
+                <span class="stat-label" style="color:#58a6ff;cursor:pointer" onclick="toggleSummary(this, '${s.fullId}')" data-tip="Klicka f\u00f6r att generera en AI-sammanfattning av sessionen">\u2728 Sammanfattning \u25BE</span>
+                <div class="summary-list"></div>
             </div>
         </div>
         <div class="context-bar-wrapper">
@@ -1940,6 +2107,7 @@ function renderPlan(plan) {
 }
 
 let _openAgentMenu = null;
+let _openSummaryId = null;
 let _allSessions = [];
 let _currentFilter = 'default';
 
@@ -2015,6 +2183,14 @@ function _renderSessionCards(sessions) {
     } else if (!document.querySelector('.agent-list.open')) {
         _openAgentMenu = null;
     }
+    // Remember open summary
+    const openSummary = el.querySelector('.summary-list.open');
+    if (openSummary) {
+        const card = openSummary.closest('.card');
+        _openSummaryId = card?.dataset?.fullid || null;
+    } else if (!document.querySelector('.summary-list.open')) {
+        _openSummaryId = null;
+    }
 
     if (!sessions.length) {
         el.innerHTML = '<div class="empty-state"><h2>Inga sessioner matchar filtret</h2><p>Prova ett annat filter.</p></div>';
@@ -2028,6 +2204,18 @@ function _renderSessionCards(sessions) {
             if (slugEl.textContent === _openAgentMenu) {
                 const list = slugEl.closest('.card')?.querySelector('.agent-list');
                 if (list) list.classList.add('open');
+            }
+        });
+    }
+    // Restore open summary
+    if (_openSummaryId) {
+        el.querySelectorAll('.card').forEach(card => {
+            if (card.dataset?.fullid === _openSummaryId) {
+                const list = card.querySelector('.summary-list');
+                if (list && _summaryCache[_openSummaryId]) {
+                    list.innerHTML = _summaryCache[_openSummaryId];
+                    list.classList.add('open');
+                }
             }
         });
     }
@@ -2050,6 +2238,10 @@ async function refresh() {
 document.addEventListener('click', (e) => {
     if (!e.target.closest('.agent-stat')) {
         document.querySelectorAll('.agent-list.open').forEach(el => el.classList.remove('open'));
+    }
+    if (!e.target.closest('.summary-list') && !e.target.closest('[onclick*="toggleSummary"]')) {
+        document.querySelectorAll('.summary-list.open').forEach(el => el.classList.remove('open'));
+        _openSummaryId = null;
     }
 });
 
@@ -2074,6 +2266,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
             params = parse_qs(parsed.query)
             hours = int(params.get("hours", [24])[0])
             self._serve_sessions(hours)
+        elif path == "/api/resume":
+            params = parse_qs(parsed.query)
+            full_id = params.get("id", [None])[0]
+            cwd = params.get("cwd", [None])[0]
+            self._resume_session(full_id, cwd)
+        elif path == "/api/summary":
+            params = parse_qs(parsed.query)
+            full_id = params.get("id", [None])[0]
+            self._get_summary(full_id)
         elif path == "/api/focus":
             params = parse_qs(parsed.query)
             tty = params.get("tty", [None])[0]
@@ -2122,6 +2323,31 @@ class DashboardHandler(BaseHTTPRequestHandler):
         ok = False
         if tmux_name:
             ok = focus_tmux_session(tmux_name)
+        result = json.dumps({"ok": ok}).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(result)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(result)
+
+    def _get_summary(self, full_id):
+        summary = None
+        if full_id:
+            summary = generate_summary(full_id)
+        ok = summary is not None
+        result = json.dumps({"ok": ok, "summary": summary}).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(result)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(result)
+
+    def _resume_session(self, full_id, cwd):
+        ok = False
+        if full_id:
+            ok = resume_session(full_id, cwd)
         result = json.dumps({"ok": ok}).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
