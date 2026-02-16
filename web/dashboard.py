@@ -11,6 +11,8 @@ Usage:
 import argparse
 import json
 import os
+import shutil
+import signal
 import subprocess
 import time
 from datetime import datetime, timezone
@@ -21,9 +23,14 @@ from urllib.parse import urlparse, parse_qs
 CLAUDE_PROJECTS = Path.home() / ".claude" / "projects"
 DEFAULT_PORT = 7685
 DEFAULT_HOST = "127.0.0.1"
+TTYD_BASE_PORT = 7681
 
 # Cache for active terminal PIDs - refreshed every scan
 _active_pids_cache = {"timestamp": 0, "pids": {}}
+
+# ttyd processes: tmux_session_name -> {"pid": int, "port": int}
+_ttyd_processes = {}
+_ttyd_next_port = TTYD_BASE_PORT
 
 
 def get_active_claude_pids():
@@ -188,6 +195,63 @@ def focus_tmux_session(tmux_session_name):
         return True
     except Exception:
         return False
+
+
+def start_ttyd(tmux_session_name):
+    """Start ttyd for a tmux session, returning the URL or None."""
+    global _ttyd_next_port
+
+    if not shutil.which("ttyd"):
+        return None
+
+    # Already running?
+    if tmux_session_name in _ttyd_processes:
+        info = _ttyd_processes[tmux_session_name]
+        # Check if process is still alive
+        try:
+            os.kill(info["pid"], 0)
+            return f"http://localhost:{info['port']}"
+        except OSError:
+            del _ttyd_processes[tmux_session_name]
+
+    port = _ttyd_next_port
+    _ttyd_next_port += 1
+
+    try:
+        proc = subprocess.Popen(
+            ["ttyd", "--writable", "--port", str(port),
+             "tmux", "attach-session", "-t", tmux_session_name],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
+        _ttyd_processes[tmux_session_name] = {"pid": proc.pid, "port": port}
+        return f"http://localhost:{port}"
+    except Exception:
+        return None
+
+
+def stop_ttyd(tmux_session_name):
+    """Stop ttyd for a tmux session."""
+    if tmux_session_name not in _ttyd_processes:
+        return False
+    info = _ttyd_processes.pop(tmux_session_name)
+    try:
+        os.kill(info["pid"], signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    return True
+
+
+def get_ttyd_url(tmux_session_name):
+    """Get the ttyd URL if running, else None."""
+    if tmux_session_name not in _ttyd_processes:
+        return None
+    info = _ttyd_processes[tmux_session_name]
+    try:
+        os.kill(info["pid"], 0)
+        return f"http://localhost:{info['port']}"
+    except OSError:
+        del _ttyd_processes[tmux_session_name]
+        return None
 
 
 def focus_terminal_by_tty(tty):
@@ -515,6 +579,7 @@ def parse_session(jsonl_path):
         "tty": None,
         "terminalPid": None,
         "tmuxSession": None,
+        "ttydUrl": None,
     }
 
     last_type = None
@@ -896,6 +961,10 @@ def scan_all_sessions(max_hours=24):
             tmux_name = tmux_sessions[tty]["tmuxSession"]
             if tmux_name.startswith("claude_") and not s.get("launcher"):
                 s["launcher"] = "GTK/tmux"
+            # Add ttyd URL if running
+            ttyd_url = get_ttyd_url(tmux_name)
+            if ttyd_url:
+                s["ttydUrl"] = ttyd_url
 
     # Sort: active first, then recent, then by last timestamp descending
     status_order = {"active": 0, "recent": 1, "idle": 2, "completed": 3}
@@ -1626,6 +1695,21 @@ async function focusTerminal(tty, tmuxSession) {
     }
 }
 
+async function openTtyd(tmuxSession) {
+    try {
+        const res = await fetch('/api/ttyd-start?session=' + encodeURIComponent(tmuxSession));
+        const data = await res.json();
+        if (data.ok && data.url) {
+            window.open(data.url, '_blank');
+        } else {
+            alert('Kunde inte starta ttyd. \u00c4r ttyd installerat? (sudo apt install ttyd)');
+        }
+    } catch (err) {
+        console.error('ttyd error:', err);
+        alert('Fel vid start av ttyd: ' + err.message);
+    }
+}
+
 async function splitView(mode, direction) {
     let ttys = [];
     if (mode === 'active') {
@@ -1755,6 +1839,7 @@ function renderCard(s) {
             }</span>` : ''}
             ${s.hasTerminal ? `<span style="color:#3fb950;cursor:pointer;user-select:none" data-tip="Klicka f\u00f6r att ${s.tmuxSession ? 'attach:a till tmux-session' : 'v\u00e4xla till terminalen'}" onclick="focusTerminal('${s.tty || ''}', ${s.tmuxSession ? "'" + s.tmuxSession + "'" : 'null'})">\u25cf ${s.tmuxSession ? 'tmux' : 'Terminal'}</span>` : s.status !== 'completed' ? '<span style="color:#6e7681" data-tip="Ingen terminal hittad f\u00f6r denna session">\u25cb Ingen terminal</span>' : ''}
             ${s.tmuxSession ? `<span style="color:#d2a8ff;font-size:11px;font-family:'SF Mono','Fira Code',monospace" data-tip="tmux session: ${s.tmuxSession}. Isolerad milj\u00f6 startad via GTK-app eller AgentZero">\u2630 ${s.tmuxSession}</span>` : ''}
+            ${s.tmuxSession ? `<span style="cursor:pointer;user-select:none;font-size:12px;${s.ttydUrl ? 'color:#3fb950' : 'color:#8b949e'}" data-tip="${s.ttydUrl ? 'ttyd k\u00f6r - klicka f\u00f6r att \u00f6ppna i webbl\u00e4sare' : '\u00d6ppna i webbl\u00e4sare via ttyd (remote access)'}" onclick="openTtyd('${s.tmuxSession}')">\uD83D\uDDA5\uFE0F ttyd${s.ttydUrl ? ' \u25cf' : ''}</span>` : ''}
             ${s.launcher ? `<span style="color:#bc8cff;font-weight:600" data-tip="Startad av ${s.launcher}">\u2692 ${s.launcher}</span>` : ''}
             <span class="model">${s.modelDisplay || s.model || '?'}</span>
             ${gitInfo}
@@ -1997,6 +2082,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
             params = parse_qs(parsed.query)
             tmux_name = params.get("session", [None])[0]
             self._focus_tmux(tmux_name)
+        elif path == "/api/ttyd-start":
+            params = parse_qs(parsed.query)
+            tmux_name = params.get("session", [None])[0]
+            self._ttyd_start(tmux_name)
+        elif path == "/api/ttyd-stop":
+            params = parse_qs(parsed.query)
+            tmux_name = params.get("session", [None])[0]
+            self._ttyd_stop(tmux_name)
         elif path == "/api/split":
             params = parse_qs(parsed.query)
             ttys = params.get("tty", [])
@@ -2029,6 +2122,31 @@ class DashboardHandler(BaseHTTPRequestHandler):
         ok = False
         if tmux_name:
             ok = focus_tmux_session(tmux_name)
+        result = json.dumps({"ok": ok}).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(result)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(result)
+
+    def _ttyd_start(self, tmux_name):
+        url = None
+        if tmux_name:
+            url = start_ttyd(tmux_name)
+        ok = url is not None
+        result = json.dumps({"ok": ok, "url": url}).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(result)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(result)
+
+    def _ttyd_stop(self, tmux_name):
+        ok = False
+        if tmux_name:
+            ok = stop_ttyd(tmux_name)
         result = json.dumps({"ok": ok}).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
