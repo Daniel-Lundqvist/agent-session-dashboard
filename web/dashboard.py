@@ -2283,7 +2283,7 @@ body {
 <div class="header">
     <h1><span>Claude</span> Sessions Dashboard</h1>
     <div class="header-right">
-        <button class="search-btn" onclick="toggleSearchPanel()">\u2728 S\u00f6k &amp; Sammanfattning</button>
+        <button class="search-btn" onclick="toggleSearchPanel()">✨ Sök &amp; Sammanfattning</button>
         <span class="refresh-dot"></span>
         <span id="last-update">Updating...</span>
     </div>
@@ -2292,20 +2292,20 @@ body {
 <div class="search-overlay" id="search-overlay" onclick="toggleSearchPanel()"></div>
 <div class="search-panel" id="search-panel">
     <div class="search-panel-header">
-        <h2>\u2728 S\u00f6k &amp; Sammanfattning</h2>
+        <h2>✨ Sök &amp; Sammanfattning</h2>
         <button class="search-panel-close" onclick="toggleSearchPanel()">&times;</button>
     </div>
     <div class="search-panel-body">
         <div class="search-input-group">
-            <input class="search-input" id="search-input" type="text" placeholder="Vad vill du s\u00f6ka p\u00e5?" onkeydown="if(event.key==='Enter')doSearch()">
+            <input class="search-input" id="search-input" type="text" placeholder="Vad vill du söka på?" onkeydown="if(event.key==='Enter')doSearch()">
         </div>
         <div class="search-scope">
-            <button class="active" onclick="setSearchScope('all', this)">Alla k\u00e4llor</button>
+            <button class="active" onclick="setSearchScope('all', this)">Alla källor</button>
             <button onclick="setSearchScope('convex', this)">Minne (Convex)</button>
             <button onclick="setSearchScope('live', this)">Live sessioner</button>
         </div>
         <div class="search-results" id="search-results">
-            <div class="search-empty">\uD83D\uDD0D S\u00f6k bland alla sessioner och minnen</div>
+            <div class="search-empty">🔍 Sök bland alla sessioner och minnen</div>
         </div>
     </div>
 </div>
@@ -2381,7 +2381,7 @@ async function resumeSession(fullId, cwd) {
         const res = await fetch('/api/resume?' + params.toString());
         const data = await res.json();
         if (!data.ok) {
-            alert('Kunde inte \u00e5teruppta sessionen.');
+            alert('Kunde inte återuppta sessionen.');
         }
     } catch (err) {
         console.error('Resume error:', err);
@@ -2411,14 +2411,14 @@ async function doSearch() {
     const query = document.getElementById('search-input').value.trim();
     if (!query) return;
     const el = document.getElementById('search-results');
-    el.innerHTML = '<div class="search-loading">S\u00f6ker...</div>';
+    el.innerHTML = '<div class="search-loading">Söker...</div>';
 
     try {
         const params = new URLSearchParams({q: query, scope: _searchScope});
         const res = await fetch('/api/search?' + params.toString());
         const data = await res.json();
         if (!data.results || !data.results.length) {
-            el.innerHTML = '<div class="search-empty">Inga tr\u00e4ffar f\u00f6r "' + query.replace(/</g,'&lt;') + '"</div>';
+            el.innerHTML = '<div class="search-empty">Inga träffar för "' + query.replace(/</g,'&lt;') + '"</div>';
             return;
         }
         el.innerHTML = data.results.map((r, i) => {
@@ -2435,11 +2435,11 @@ async function doSearch() {
                     <span class="search-result-slug">${slug} ${sourceTag}</span>
                     <span class="search-result-meta">${r.when || ''}</span>
                 </div>
-                <div class="search-result-project">${r.project || ''} ${r.model ? '\u00b7 ' + r.model : ''}</div>
+                <div class="search-result-project">${r.project || ''} ${r.model ? '· ' + r.model : ''}</div>
                 <div class="search-result-content">${(r.snippet || '').replace(/</g,'&lt;')}</div>
                 <div class="search-result-expanded" id="search-exp-${i}">${(r.expanded || '').replace(/</g,'&lt;')}</div>
                 <div class="search-result-actions">
-                    ${r.expanded ? `<button onclick="document.getElementById('search-exp-${i}').classList.toggle('open')">Ut\u00f6kad sammanfattning</button>` : ''}
+                    ${r.expanded ? `<button onclick="document.getElementById('search-exp-${i}').classList.toggle('open')">Utökad sammanfattning</button>` : ''}
                     ${resumeBtn}
                 </div>
             </div>`;
@@ -2456,7 +2456,7 @@ async function openTtyd(tmuxSession) {
         if (data.ok && data.url) {
             window.open(data.url, '_blank');
         } else {
-            alert('Kunde inte starta ttyd. \u00c4r ttyd installerat? (sudo apt install ttyd)');
+            alert('Kunde inte starta ttyd. Är ttyd installerat? (sudo apt install ttyd)');
         }
     } catch (err) {
         console.error('ttyd error:', err);
@@ -2520,8 +2520,8 @@ function formatWhen(isoStr) {
     const target = new Date(d.getFullYear(), d.getMonth(), d.getDate());
     const time = d.toLocaleTimeString('sv-SE', {hour:'2-digit', minute:'2-digit'});
     if (target.getTime() === today.getTime()) return 'idag ' + time;
-    if (target.getTime() === yesterday.getTime()) return 'ig\u00e5r ' + time;
-    if (target.getTime() === dayBefore.getTime()) return 'f\u00f6rrg\u00e5r ' + time;
+    if (target.getTime() === yesterday.getTime()) return 'igår ' + time;
+    if (target.getTime() === dayBefore.getTime()) return 'förrgår ' + time;
     const months = ['Jan','Feb','Mar','Apr','Maj','Jun','Jul','Aug','Sep','Okt','Nov','Dec'];
     return d.getDate() + ' ' + months[d.getMonth()];
 }
@@ -2534,19 +2534,19 @@ function renderSummary(summary) {
             <span class="summary-value green">${summary.active}</span>
         </div>
         <div class="summary-item">
-            <span class="summary-label" data-tip="Sessioner aktiva 2\u201310 minuter sedan">Recent</span>
+            <span class="summary-label" data-tip="Sessioner aktiva 2–10 minuter sedan">Recent</span>
             <span class="summary-value yellow">${summary.recent}</span>
         </div>
         <div class="summary-item">
-            <span class="summary-label" data-tip="Alla sessioner fr\u00e5n senaste 24 timmarna (active + recent + idle + completed)">Total</span>
+            <span class="summary-label" data-tip="Alla sessioner från senaste 24 timmarna (active + recent + idle + completed)">Total</span>
             <span class="summary-value blue">${summary.total}</span>
         </div>
         <div class="summary-item">
-            <span class="summary-label" data-tip="Totalt antal tokens f\u00f6rbrukade av alla sessioner (in + ut + cache)">Tokens</span>
+            <span class="summary-label" data-tip="Totalt antal tokens förbrukade av alla sessioner (in + ut + cache)">Tokens</span>
             <span class="summary-value purple">${formatTokens(summary.totalTokens)}</span>
         </div>
         <div class="summary-item">
-            <span class="summary-label" data-tip="Estimerad totalkostnad baserat p\u00e5 tokens och modellpriser">Cost</span>
+            <span class="summary-label" data-tip="Estimerad totalkostnad baserat på tokens och modellpriser">Cost</span>
             <span class="summary-value green">$${summary.totalCost.toFixed(2)}</span>
         </div>
     `;
@@ -2559,7 +2559,7 @@ function renderCard(s) {
     const ctxClass = ctxPct > 80 ? 'high' : ctxPct > 50 ? 'medium' : 'low';
 
     const gitInfo = s.gitBranch
-        ? `<span class="branch">\u2387 ${s.gitBranch}</span> <span class="${s.gitDirty ? 'dirty' : 'clean'}">${s.gitDirty ? '\u25cf' : '\u2714'}</span>`
+        ? `<span class="branch">⎇ ${s.gitBranch}</span> <span class="${s.gitDirty ? 'dirty' : 'clean'}">${s.gitDirty ? '●' : '✔'}</span>`
         : '';
 
     const slug = s.slug || s.id;
@@ -2570,31 +2570,31 @@ function renderCard(s) {
     <div class="card ${s.status} ${s.tmuxSession ? 'tmux' : ''} ${isSelected ? 'selected' : ''}" data-fullid="${s.fullId}">
         <div class="card-header">
             <div class="card-title" style="display:flex;flex-direction:row;align-items:flex-start;gap:0">
-                ${s.hasTerminal ? `<span class="card-select ${isSelected ? 'checked' : ''}" onclick="toggleSelectSession('${slug}', this)" data-tip="Markera f\u00f6r split view">${isSelected ? '\u2713' : ''}</span>` : ''}
+                ${s.hasTerminal ? `<span class="card-select ${isSelected ? 'checked' : ''}" onclick="toggleSelectSession('${slug}', this)" data-tip="Markera för split view">${isSelected ? '✓' : ''}</span>` : ''}
                 <div>
                     <div class="card-slug">${slug}</div>
                     <div class="card-project">${s.project || 'unknown'}</div>
                 </div>
             </div>
             <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">
-                <span class="card-badge ${s.status}" data-tip="${s.status === 'active' ? 'Aktivitet senaste 2 min' : s.status === 'recent' ? 'Aktiv 2\u201310 min sedan' : s.status === 'idle' ? 'Vilande, 10\u201360 min sedan' : 'Avslutad, \u00f6ver 1h sedan'}">${s.status}</span>
+                <span class="card-badge ${s.status}" data-tip="${s.status === 'active' ? 'Aktivitet senaste 2 min' : s.status === 'recent' ? 'Aktiv 2–10 min sedan' : s.status === 'idle' ? 'Vilande, 10–60 min sedan' : 'Avslutad, över 1h sedan'}">${s.status}</span>
                 ${s.status !== 'active' ? `<span style="color:#6e7681;font-size:11px;font-family:'SF Mono','Fira Code',monospace">${formatWhen(s.lastTimestamp)}</span>` : ''}
             </div>
         </div>
         <div class="card-meta">
             ${(s.hasTerminal || s.status === 'active') ? `<span class="live-state ${s.liveState}" data-tip="${
                 s.liveState === 'working' ? 'Claude arbetar just nu' + (s.lastTool ? ' (' + s.lastTool + ')' : '') :
-                s.liveState === 'choice' ? 'V\u00e4ntar p\u00e5 ditt val (fr\u00e5ga visas i terminalen)' :
-                'V\u00e4ntar p\u00e5 ditt meddelande'
+                s.liveState === 'choice' ? 'Väntar på ditt val (fråga visas i terminalen)' :
+                'Väntar på ditt meddelande'
             }"><span class="live-dot ${s.liveState}"></span>${
                 s.liveState === 'working' ? 'Arbetar...' :
-                s.liveState === 'choice' ? 'V\u00e4ntar p\u00e5 val' :
-                'V\u00e4ntar'
+                s.liveState === 'choice' ? 'Väntar på val' :
+                'Väntar'
             }</span>` : ''}
-            ${s.hasTerminal ? `<span style="color:#3fb950;cursor:pointer;user-select:none" data-tip="Klicka f\u00f6r att ${s.tmuxSession ? 'attach:a till tmux-session' : 'v\u00e4xla till terminalen'}" onclick="focusTerminal('${s.tty || ''}', ${s.tmuxSession ? "'" + s.tmuxSession + "'" : 'null'})">\u25cf ${s.tmuxSession ? 'tmux' : 'Terminal'}</span>` : s.fullId && s.status !== 'completed' ? `<span style="color:#58a6ff;cursor:pointer;user-select:none" data-tip="\u00c5teruppta sessionen i en ny terminal (claude --resume)" onclick="resumeSession('${s.fullId}', '${(s.cwd || '').replace(/'/g, "\\\\'")}')">&#x21bb; Resume</span>` : s.status !== 'completed' ? '<span style="color:#6e7681">\u25cb Ingen terminal</span>' : ''}
-            ${s.tmuxSession ? `<span style="color:#d2a8ff;font-size:11px;font-family:'SF Mono','Fira Code',monospace" data-tip="tmux session: ${s.tmuxSession}. Isolerad milj\u00f6 startad via GTK-app eller AgentZero">\u2630 ${s.tmuxSession}</span>` : ''}
-            ${s.tmuxSession ? `<span style="cursor:pointer;user-select:none;font-size:12px;${s.ttydUrl ? 'color:#3fb950' : 'color:#8b949e'}" data-tip="${s.ttydUrl ? 'ttyd k\u00f6r - klicka f\u00f6r att \u00f6ppna i webbl\u00e4sare' : '\u00d6ppna i webbl\u00e4sare via ttyd (remote access)'}" onclick="openTtyd('${s.tmuxSession}')">\uD83D\uDDA5\uFE0F ttyd${s.ttydUrl ? ' \u25cf' : ''}</span>` : ''}
-            ${s.launcher ? `<span style="color:#bc8cff;font-weight:600" data-tip="Startad av ${s.launcher}">\u2692 ${s.launcher}</span>` : ''}
+            ${s.hasTerminal ? `<span style="color:#3fb950;cursor:pointer;user-select:none" data-tip="Klicka för att ${s.tmuxSession ? 'attach:a till tmux-session' : 'växla till terminalen'}" onclick="focusTerminal('${s.tty || ''}', ${s.tmuxSession ? "'" + s.tmuxSession + "'" : 'null'})">● ${s.tmuxSession ? 'tmux' : 'Terminal'}</span>` : s.fullId && s.status !== 'completed' ? `<span style="color:#58a6ff;cursor:pointer;user-select:none" data-tip="Återuppta sessionen i en ny terminal (claude --resume)" onclick="resumeSession('${s.fullId}', '${(s.cwd || '').replace(/'/g, "\\\\'")}')">&#x21bb; Resume</span>` : s.status !== 'completed' ? '<span style="color:#6e7681">○ Ingen terminal</span>' : ''}
+            ${s.tmuxSession ? `<span style="color:#d2a8ff;font-size:11px;font-family:'SF Mono','Fira Code',monospace" data-tip="tmux session: ${s.tmuxSession}. Isolerad miljö startad via GTK-app eller AgentZero">☰ ${s.tmuxSession}</span>` : ''}
+            ${s.tmuxSession ? `<span style="cursor:pointer;user-select:none;font-size:12px;${s.ttydUrl ? 'color:#3fb950' : 'color:#8b949e'}" data-tip="${s.ttydUrl ? 'ttyd kör - klicka för att öppna i webbläsare' : 'Öppna i webbläsare via ttyd (remote access)'}" onclick="openTtyd('${s.tmuxSession}')">🖥️ ttyd${s.ttydUrl ? ' ●' : ''}</span>` : ''}
+            ${s.launcher ? `<span style="color:#bc8cff;font-weight:600" data-tip="Startad av ${s.launcher}">⚒ ${s.launcher}</span>` : ''}
             <span class="model">${s.modelDisplay || s.model || '?'}</span>
             ${gitInfo}
             <span>v${s.version || '?'}</span>
@@ -2602,11 +2602,11 @@ function renderCard(s) {
         </div>
         <div class="card-stats">
             <div class="stat">
-                <span class="stat-label" data-tip="Estimerad kostnad baserat p\u00e5 tokens \u00d7 modellpris">Cost</span>
+                <span class="stat-label" data-tip="Estimerad kostnad baserat på tokens × modellpris">Cost</span>
                 <span class="stat-value cost">$${s.cost.toFixed(2)}</span>
             </div>
             <div class="stat">
-                <span class="stat-label" data-tip="Tokens skickade till modellen (input + cache-l\u00e4sningar)">Tokens In</span>
+                <span class="stat-label" data-tip="Tokens skickade till modellen (input + cache-läsningar)">Tokens In</span>
                 <span class="stat-value tokens">${formatTokens(s.tokens.input + s.tokens.cache_read)}</span>
             </div>
             <div class="stat">
@@ -2615,25 +2615,25 @@ function renderCard(s) {
             </div>
             <div class="stat">
                 <span class="stat-label" data-tip="Antal verktygsanrop (Read, Edit, Bash, Grep, etc)">Tools</span>
-                <span class="stat-value tools">\uD83D\uDD27 ${s.tools}</span>
+                <span class="stat-value tools">🔧 ${s.tools}</span>
             </div>
             <div class="stat agent-stat">
-                <span class="stat-label" data-tip="Klicka f\u00f6r att visa vilka agenter som anv\u00e4ndes">Agents</span>
-                <span class="stat-value agents agent-toggle" onclick="this.parentElement.querySelector('.agent-list').classList.toggle('open')" style="cursor:pointer">\uD83E\uDD16 ${s.agents} calls${s.subagentFiles ? ` (${s.subagentFiles} agents)` : ''} ${s.agentTypes.length ? '\u25BE' : ''}</span>
+                <span class="stat-label" data-tip="Klicka för att visa vilka agenter som användes">Agents</span>
+                <span class="stat-value agents agent-toggle" onclick="this.parentElement.querySelector('.agent-list').classList.toggle('open')" style="cursor:pointer">🤖 ${s.agents} calls${s.subagentFiles ? ` (${s.subagentFiles} agents)` : ''} ${s.agentTypes.length ? '▾' : ''}</span>
                 ${s.agentTypes.length ? `<div class="agent-list">${s.agentTypes.map(a => `<div class="agent-item"><span class="agent-type">${a.type}</span><span class="agent-desc">${a.desc}</span></div>`).join('')}</div>` : ''}
             </div>
             <div class="stat">
-                <span class="stat-label" data-tip="Antal meddelanden fr\u00e5n dig i sessionen">Messages</span>
+                <span class="stat-label" data-tip="Antal meddelanden från dig i sessionen">Messages</span>
                 <span class="stat-value duration">${s.messages}</span>
             </div>
             <div class="stat" style="position:relative">
-                <span class="stat-label" style="color:#58a6ff;cursor:pointer" onclick="toggleSummary(this, '${s.fullId}')" data-tip="Klicka f\u00f6r att generera en AI-sammanfattning av sessionen">\u2728 Sammanfattning \u25BE</span>
+                <span class="stat-label" style="color:#58a6ff;cursor:pointer" onclick="toggleSummary(this, '${s.fullId}')" data-tip="Klicka för att generera en AI-sammanfattning av sessionen">✨ Sammanfattning ▾</span>
                 <div class="summary-list"></div>
             </div>
         </div>
         <div class="context-bar-wrapper">
             <div class="context-bar-label">
-                <span data-tip="Andel av context-f\u00f6nstret (200k tokens) som anv\u00e4nds. R\u00f6d = n\u00e4ra fullt.">Context</span>
+                <span data-tip="Andel av context-fönstret (200k tokens) som används. Röd = nära fullt.">Context</span>
                 <span>${formatTokens(s.tokensTotal)} tokens</span>
             </div>
             <div class="context-bar">
@@ -2647,12 +2647,12 @@ function renderRow(s) {
     const slug = s.slug || s.id;
     const costStr = s.cost >= 1 ? '$' + s.cost.toFixed(0) : '$' + s.cost.toFixed(2);
     const resumeBtn = !s.hasTerminal && s.fullId && s.status !== 'completed'
-        ? `<span style="color:#58a6ff" onclick="resumeSession('${s.fullId}', '${(s.cwd||'').replace(/'/g, "\\\\'")}')" data-tip="\u00c5teruppta">&#x21bb;</span>`
+        ? `<span style="color:#58a6ff" onclick="resumeSession('${s.fullId}', '${(s.cwd||'').replace(/'/g, "\\\\'")}')" data-tip="Återuppta">&#x21bb;</span>`
         : '';
     const termBtn = s.hasTerminal
-        ? `<span style="color:#3fb950" onclick="focusTerminal('${s.tty||''}', ${s.tmuxSession ? "'" + s.tmuxSession + "'" : 'null'})" data-tip="Terminal">\u25cf</span>`
+        ? `<span style="color:#3fb950" onclick="focusTerminal('${s.tty||''}', ${s.tmuxSession ? "'" + s.tmuxSession + "'" : 'null'})" data-tip="Terminal">●</span>`
         : '';
-    const liveIcon = s.liveState === 'working' ? '\uD83D\uDD35' : s.liveState === 'choice' ? '\uD83D\uDFE0' : '';
+    const liveIcon = s.liveState === 'working' ? '🔵' : s.liveState === 'choice' ? '🟠' : '';
     return `
     <div class="row-item" data-fullid="${s.fullId}">
         <span class="row-indicator ${s.status}"></span>
@@ -2663,7 +2663,7 @@ function renderRow(s) {
         <span class="row-tools">${s.tools}</span>
         <span class="row-time">${s.durationMinutes}m</span>
         <span style="color:#6e7681;font-size:11px">${formatWhen(s.lastTimestamp)}</span>
-        <span class="row-actions">${termBtn}${resumeBtn}<span style="color:#58a6ff;cursor:pointer" onclick="toggleSummary(this, '${s.fullId}')" data-tip="Sammanfattning">\u2728</span></span>
+        <span class="row-actions">${termBtn}${resumeBtn}<span style="color:#58a6ff;cursor:pointer" onclick="toggleSummary(this, '${s.fullId}')" data-tip="Sammanfattning">✨</span></span>
     </div>`;
 }
 
@@ -2698,23 +2698,23 @@ function renderPlan(plan) {
         <div class="plan-meters">
             <div class="plan-meter">
                 <div class="plan-meter-header">
-                    <span class="plan-meter-label" data-tip="Anv\u00e4ndning i nuvarande 5-timmarsblock. Nollst\u00e4lls automatiskt.">Session (5h)</span>
+                    <span class="plan-meter-label" data-tip="Användning i nuvarande 5-timmarsblock. Nollställs automatiskt.">Session (5h)</span>
                     <span class="plan-meter-value" style="color: ${plan.session.pct >= 80 ? '#f85149' : plan.session.pct >= 50 ? '#d29922' : '#3fb950'}">${plan.session.pct.toFixed(0)}%</span>
                 </div>
                 <div class="plan-bar">
                     <div class="plan-bar-fill ${barClass(plan.session.pct)}" style="width: ${Math.min(plan.session.pct, 100)}%"></div>
                 </div>
-                ${plan.session.reset ? `<span class="plan-meter-reset">\u23f1 ${plan.session.reset}</span>` : ''}
+                ${plan.session.reset ? `<span class="plan-meter-reset">⏱ ${plan.session.reset}</span>` : ''}
             </div>
             <div class="plan-meter">
                 <div class="plan-meter-header">
-                    <span class="plan-meter-label" data-tip="Total anv\u00e4ndning senaste 7 dagarna, alla modeller. Nollst\u00e4lls veckovis.">Weekly</span>
+                    <span class="plan-meter-label" data-tip="Total användning senaste 7 dagarna, alla modeller. Nollställs veckovis.">Weekly</span>
                     <span class="plan-meter-value" style="color: ${plan.weekly.pct >= 80 ? '#f85149' : plan.weekly.pct >= 50 ? '#d29922' : '#3fb950'}">${plan.weekly.pct.toFixed(0)}%</span>
                 </div>
                 <div class="plan-bar">
                     <div class="plan-bar-fill ${barClass(plan.weekly.pct)}" style="width: ${Math.min(plan.weekly.pct, 100)}%"></div>
                 </div>
-                ${plan.weekly.reset ? `<span class="plan-meter-reset">\u23f1 ${plan.weekly.reset}</span>` : ''}
+                ${plan.weekly.reset ? `<span class="plan-meter-reset">⏱ ${plan.weekly.reset}</span>` : ''}
             </div>
         </div>
         ${extraHtml}
@@ -2761,21 +2761,21 @@ function renderFilters() {
             projects.map(p => `<option value="${p}"${_currentProject === p ? ' selected' : ''}>${p}</option>`).join('') +
         `</select>` : '') +
         `<div class="view-toggle">` +
-            `<button class="${_currentView === 'cards' ? 'active' : ''}" onclick="setView('cards')" data-tip="Kortvy">\u25A6 Kort</button>` +
-            `<button class="${_currentView === 'list' ? 'active' : ''}" onclick="setView('list')" data-tip="Radvy (kompakt)">\u2630 Lista</button>` +
+            `<button class="${_currentView === 'cards' ? 'active' : ''}" onclick="setView('cards')" data-tip="Kortvy">▦ Kort</button>` +
+            `<button class="${_currentView === 'list' ? 'active' : ''}" onclick="setView('list')" data-tip="Radvy (kompakt)">☰ Lista</button>` +
         `</div>` +
         '<span class="split-separator"></span>' +
         '<span class="filter-label" style="margin-left:12px">Split View</span>' +
         `<div class="split-group">` +
             `<button class="split-btn" onclick="splitView('active','horizontal')" data-tip="Visa alla aktiva terminaler sida vid sida" ${activeTerminals < 2 ? 'disabled' : ''}>` +
-                `\u2B0C Aktiva<span class="filter-count">${activeTerminals}</span></button>` +
+                `⬌ Aktiva<span class="filter-count">${activeTerminals}</span></button>` +
             `<button class="split-btn" onclick="splitView('active','vertical')" data-tip="Visa alla aktiva terminaler staplade" ${activeTerminals < 2 ? 'disabled' : ''}>` +
-                `\u2B0D Aktiva</button>` +
-            `<button class="split-btn" onclick="splitView('active','grid')" data-tip="Visa alla aktiva terminaler i rutn\u00e4t" ${activeTerminals < 3 ? 'disabled' : ''}>` +
-                `\u25A6 Grid</button>` +
+                `⬍ Aktiva</button>` +
+            `<button class="split-btn" onclick="splitView('active','grid')" data-tip="Visa alla aktiva terminaler i rutnät" ${activeTerminals < 3 ? 'disabled' : ''}>` +
+                `▦ Grid</button>` +
             (selectedCount >= 2 ?
-                `<button class="split-btn split-selected" onclick="splitView('selected','horizontal')" data-tip="Splitta markerade sessioner horisontellt">\u2B0C Valda<span class="filter-count">${selectedCount}</span></button>` +
-                `<button class="split-btn split-selected" onclick="splitView('selected','vertical')" data-tip="Splitta markerade sessioner vertikalt">\u2B0D Valda</button>`
+                `<button class="split-btn split-selected" onclick="splitView('selected','horizontal')" data-tip="Splitta markerade sessioner horisontellt">⬌ Valda<span class="filter-count">${selectedCount}</span></button>` +
+                `<button class="split-btn split-selected" onclick="splitView('selected','vertical')" data-tip="Splitta markerade sessioner vertikalt">⬍ Valda</button>`
             : '') +
         `</div>`;
 }
@@ -2846,7 +2846,7 @@ function _renderSessionCards(sessions) {
     if (_currentView === 'list') {
         el.className = 'sessions list-view';
         el.innerHTML =
-            `<div class="row-header"><span></span><span>Session</span><span>Projekt</span><span>Kostnad</span><span>Tokens</span><span>Tools</span><span>Tid</span><span>Senast</span><span style="text-align:right">\u00c5tg\u00e4rd</span></div>` +
+            `<div class="row-header"><span></span><span>Session</span><span>Projekt</span><span>Kostnad</span><span>Tokens</span><span>Tools</span><span>Tid</span><span>Senast</span><span style="text-align:right">Åtgärd</span></div>` +
             sessions.map(renderRow).join('');
         return;
     }
