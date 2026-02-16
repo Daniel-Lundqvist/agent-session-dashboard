@@ -2148,7 +2148,7 @@ function renderFilters() {
     for (const [key, f] of Object.entries(FILTERS)) {
         counts[key] = _allSessions.filter(f.fn).length;
     }
-    const activeTerminals = _allSessions.filter(s => s.hasTerminal && s.tty).length;
+    const activeTerminals = _allSessions.filter(s => s.hasTerminal && s.tty && !s.isSummarySession).length;
     const selectedCount = _selectedSessions.size;
 
     el.innerHTML = '<span class="filter-label">Filter</span>' +
