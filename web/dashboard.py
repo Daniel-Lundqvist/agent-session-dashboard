@@ -3005,7 +3005,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if full_id:
             summary = generate_summary(full_id)
         ok = summary is not None
-        result = json.dumps({"ok": ok, "summary": summary}).encode("utf-8")
+        result = json.dumps({"ok": ok, "summary": summary}, ensure_ascii=False).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(result)))
@@ -3017,7 +3017,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         results = []
         if query:
             results = search_all(query, scope)
-        result = json.dumps({"ok": True, "results": results}).encode("utf-8")
+        result = json.dumps({"ok": True, "results": results}, ensure_ascii=False).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(result)))
@@ -3066,7 +3066,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if full_id:
             data = export_session_data(full_id)
         ok = data is not None
-        result = json.dumps({"ok": ok, "data": data}).encode("utf-8")
+        result = json.dumps({"ok": ok, "data": data}, ensure_ascii=False).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(result)))
@@ -3135,7 +3135,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         }
 
         plan_usage = get_plan_usage()
-        data = json.dumps({"sessions": sessions, "summary": summary, "plan": plan_usage})
+        data = json.dumps({"sessions": sessions, "summary": summary, "plan": plan_usage}, ensure_ascii=False)
         content = data.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
