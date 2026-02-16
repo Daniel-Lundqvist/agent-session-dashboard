@@ -350,6 +350,62 @@ def generate_summary(full_id):
     return None
 
 
+def export_session_data(full_id):
+    """Export structured session data ready for memory storage (Convex etc)."""
+    # Find and parse the session
+    jsonl_path = None
+    for f in CLAUDE_PROJECTS.glob(f"*/{full_id}.jsonl"):
+        jsonl_path = f
+        break
+    if not jsonl_path or not jsonl_path.exists():
+        return None
+
+    session = parse_session(jsonl_path)
+    if not session:
+        return None
+
+    # Extract project name from cwd
+    cwd = session.get("cwd", "")
+    project_name = Path(cwd).name if cwd else ""
+
+    # Get or generate summary
+    summary = _summary_cache.get(full_id, {}).get("summary")
+    if not summary:
+        summary = generate_summary(full_id)
+
+    # Extract tags from summary (simple: words after ** markers)
+    tags = []
+    if summary:
+        import re
+        tags = list(set(
+            m.lower() for m in re.findall(r'\*\*([^*]+)\*\*', summary)
+            if len(m) < 40
+        ))
+
+    return {
+        "sessionId": full_id,
+        "slug": session.get("slug", ""),
+        "project": project_name,
+        "cwd": cwd,
+        "model": session.get("model", ""),
+        "modelDisplay": session.get("modelDisplay", ""),
+        "cost": session.get("cost", 0),
+        "tokensTotal": session.get("tokensTotal", 0),
+        "messages": session.get("messages", 0),
+        "tools": session.get("tools", 0),
+        "agents": session.get("agents", 0),
+        "durationMinutes": session.get("durationMinutes", 0),
+        "summary": summary,
+        "tags": tags,
+        "timestamps": {
+            "first": session.get("firstTimestamp", ""),
+            "last": session.get("lastTimestamp", ""),
+        },
+        "gitBranch": session.get("gitBranch"),
+        "version": session.get("version", ""),
+    }
+
+
 def focus_terminal_by_tty(tty):
     """Focus the terminal window that owns the given tty (e.g. pts/3).
 
@@ -2296,6 +2352,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             params = parse_qs(parsed.query)
             full_id = params.get("id", [None])[0]
             self._get_summary(full_id)
+        elif path == "/api/export-summary":
+            params = parse_qs(parsed.query)
+            full_id = params.get("id", [None])[0]
+            self._export_summary(full_id)
         elif path == "/api/focus":
             params = parse_qs(parsed.query)
             tty = params.get("tty", [None])[0]
@@ -2358,6 +2418,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
             summary = generate_summary(full_id)
         ok = summary is not None
         result = json.dumps({"ok": ok, "summary": summary}).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(result)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(result)
+
+    def _export_summary(self, full_id):
+        data = None
+        if full_id:
+            data = export_session_data(full_id)
+        ok = data is not None
+        result = json.dumps({"ok": ok, "data": data}).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(result)))
