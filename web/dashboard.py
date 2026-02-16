@@ -20,10 +20,16 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
+import urllib.request
+
 CLAUDE_PROJECTS = Path.home() / ".claude" / "projects"
 DEFAULT_PORT = 7685
 DEFAULT_HOST = "127.0.0.1"
 TTYD_BASE_PORT = 7681
+
+# Convex integration
+CONVEX_SITE_URL = "https://hallowed-goldfish-749.eu-west-1.convex.site"
+CONVEX_AUTH_TOKEN = "cc-0003c0ac50f4f45df98a2ebb2530335c"
 
 # Cache for active terminal PIDs - refreshed every scan
 _active_pids_cache = {"timestamp": 0, "pids": {}}
@@ -348,6 +354,175 @@ def generate_summary(full_id):
     except Exception:
         pass
     return None
+
+
+def _convex_post(endpoint, payload):
+    """POST to Convex HTTP API."""
+    url = f"{CONVEX_SITE_URL}{endpoint}"
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        url, data=data, method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {CONVEX_AUTH_TOKEN}",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return json.loads(r.read())
+    except Exception as e:
+        print(f"Convex API error: {e}")
+        return None
+
+
+def search_convex_memories(query, limit=15):
+    """Search memories in Convex via full-text search."""
+    result = _convex_post("/api/memories/search", {
+        "query": query,
+        "limit": limit,
+    })
+    if not result:
+        return []
+    # Convex returns {"results": [...]} or just [...]
+    items = result if isinstance(result, list) else result.get("results", [])
+    if not items:
+        return []
+    hits = []
+    for m in items:
+        hits.append({
+            "source": "convex",
+            "slug": "",
+            "sessionId": "",
+            "fullId": "",
+            "project": "",
+            "cwd": "",
+            "model": "",
+            "snippet": m.get("title", "") + " - " + (m.get("content", "")[:200]),
+            "expanded": m.get("content", ""),
+            "when": _format_timestamp(m.get("createdAt", 0)),
+            "importance": m.get("importance", 0),
+            "type": m.get("type", ""),
+            "tags": m.get("tags", []),
+        })
+    return hits
+
+
+def search_local_sessions(query, max_hours=168):
+    """Search local JSONL sessions for matching user messages."""
+    query_lower = query.lower()
+    query_terms = query_lower.split()
+    results = []
+
+    if not CLAUDE_PROJECTS.exists():
+        return results
+
+    cutoff = time.time() - (max_hours * 3600)
+
+    for jsonl_file in CLAUDE_PROJECTS.glob("*/*.jsonl"):
+        try:
+            mtime = os.path.getmtime(jsonl_file)
+            if mtime < cutoff:
+                continue
+
+            # Quick scan: check if any user message matches
+            matched_texts = []
+            session_info = None
+
+            with open(jsonl_file, "r") as f:
+                for line in f:
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+
+                    etype = entry.get("type")
+                    if etype == "user" and not session_info:
+                        session_info = {
+                            "cwd": entry.get("cwd", ""),
+                            "fullId": entry.get("sessionId", jsonl_file.stem),
+                        }
+
+                    if etype == "user":
+                        msg = entry.get("message", {})
+                        text = ""
+                        if isinstance(msg, dict):
+                            content = msg.get("content", "")
+                            if isinstance(content, list):
+                                text = " ".join(
+                                    b.get("text", "") for b in content
+                                    if isinstance(b, dict) and b.get("type") == "text"
+                                )
+                            else:
+                                text = str(content)
+                        if text and all(t in text.lower() for t in query_terms):
+                            matched_texts.append(text[:300])
+
+                    if etype == "assistant":
+                        slug = entry.get("slug", "")
+                        if slug and session_info:
+                            session_info["slug"] = slug
+                        model = entry.get("message", {}).get("model", "")
+                        if model and session_info:
+                            session_info["model"] = MODEL_DISPLAY.get(model, model)
+
+            if matched_texts and session_info:
+                # Check if this is a summary session
+                if matched_texts and "Sammanfatta vad sessionen handlade om" in matched_texts[0]:
+                    continue
+
+                cwd = session_info.get("cwd", "")
+                results.append({
+                    "source": "live",
+                    "slug": session_info.get("slug", jsonl_file.stem[:8]),
+                    "sessionId": session_info.get("fullId", jsonl_file.stem),
+                    "fullId": session_info.get("fullId", jsonl_file.stem),
+                    "project": Path(cwd).name if cwd else "",
+                    "cwd": cwd,
+                    "model": session_info.get("model", ""),
+                    "snippet": matched_texts[0][:200],
+                    "expanded": "\n---\n".join(matched_texts[:5]),
+                    "when": _format_timestamp(mtime),
+                    "matchCount": len(matched_texts),
+                })
+        except Exception:
+            continue
+
+    results.sort(key=lambda r: r.get("matchCount", 0), reverse=True)
+    return results[:15]
+
+
+def _format_timestamp(ts):
+    """Format a timestamp (seconds or ms) to a human-readable string."""
+    if not ts:
+        return ""
+    if ts > 1e12:  # milliseconds
+        ts = ts / 1000
+    try:
+        dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+        now = datetime.now(timezone.utc)
+        diff = now - dt
+        if diff.days == 0:
+            hours = diff.seconds // 3600
+            if hours == 0:
+                return f"{diff.seconds // 60}m sedan"
+            return f"{hours}h sedan"
+        elif diff.days == 1:
+            return "ig\u00e5r"
+        elif diff.days < 7:
+            return f"{diff.days}d sedan"
+        return dt.strftime("%Y-%m-%d")
+    except Exception:
+        return ""
+
+
+def search_all(query, scope="all"):
+    """Combined search across Convex and local sessions."""
+    results = []
+    if scope in ("all", "convex"):
+        results.extend(search_convex_memories(query))
+    if scope in ("all", "live"):
+        results.extend(search_local_sessions(query))
+    return results
 
 
 def export_session_data(full_id):
@@ -1757,6 +1932,185 @@ body {
 }
 .project-filter:hover { border-color: #58a6ff; }
 
+/* Search panel */
+.search-btn {
+    background: linear-gradient(135deg, #7c3aed, #58a6ff);
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    padding: 8px 16px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    font-family: inherit;
+    transition: opacity 0.2s;
+}
+.search-btn:hover { opacity: 0.85; }
+
+.search-panel {
+    position: fixed;
+    top: 0;
+    right: -480px;
+    width: 460px;
+    height: 100vh;
+    background: #161b22;
+    border-left: 1px solid #30363d;
+    z-index: 200;
+    transition: right 0.3s ease;
+    display: flex;
+    flex-direction: column;
+    box-shadow: -8px 0 32px rgba(0,0,0,0.5);
+}
+.search-panel.open { right: 0; }
+
+.search-panel-header {
+    padding: 16px 20px;
+    border-bottom: 1px solid #30363d;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+.search-panel-header h2 {
+    font-size: 16px;
+    color: #f0f6fc;
+    margin: 0;
+}
+.search-panel-close {
+    background: none;
+    border: none;
+    color: #8b949e;
+    font-size: 20px;
+    cursor: pointer;
+    padding: 4px 8px;
+}
+.search-panel-close:hover { color: #f0f6fc; }
+
+.search-panel-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px 20px;
+}
+
+.search-input-group {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 12px;
+}
+.search-input {
+    flex: 1;
+    background: #0d1117;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    padding: 10px 14px;
+    color: #f0f6fc;
+    font-size: 14px;
+    font-family: inherit;
+    outline: none;
+}
+.search-input:focus { border-color: #58a6ff; }
+.search-input::placeholder { color: #484f58; }
+
+.search-scope {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 16px;
+}
+.search-scope button {
+    background: #21262d;
+    color: #8b949e;
+    border: 1px solid #30363d;
+    border-radius: 4px;
+    padding: 4px 10px;
+    font-size: 11px;
+    cursor: pointer;
+    font-family: inherit;
+}
+.search-scope button.active { background: #388bfd26; color: #58a6ff; border-color: #388bfd; }
+
+.search-results { display: flex; flex-direction: column; gap: 10px; }
+
+.search-result {
+    background: #0d1117;
+    border: 1px solid #21262d;
+    border-radius: 8px;
+    padding: 12px 14px;
+    transition: border-color 0.2s;
+}
+.search-result:hover { border-color: #30363d; }
+.search-result-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 6px;
+}
+.search-result-slug {
+    font-weight: 600;
+    color: #58a6ff;
+    font-size: 13px;
+}
+.search-result-meta {
+    font-size: 11px;
+    color: #6e7681;
+}
+.search-result-project {
+    font-size: 11px;
+    color: #8b949e;
+    margin-bottom: 6px;
+}
+.search-result-content {
+    font-size: 12px;
+    color: #c9d1d9;
+    line-height: 1.5;
+    white-space: pre-wrap;
+}
+.search-result-expanded {
+    display: none;
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid #21262d;
+    font-size: 12px;
+    color: #c9d1d9;
+    line-height: 1.5;
+    white-space: pre-wrap;
+}
+.search-result-expanded.open { display: block; }
+.search-result-actions {
+    display: flex;
+    gap: 10px;
+    margin-top: 8px;
+}
+.search-result-actions button {
+    background: none;
+    border: 1px solid #30363d;
+    color: #8b949e;
+    border-radius: 4px;
+    padding: 3px 10px;
+    font-size: 11px;
+    cursor: pointer;
+    font-family: inherit;
+}
+.search-result-actions button:hover { color: #58a6ff; border-color: #58a6ff; }
+.search-loading { color: #8b949e; font-style: italic; padding: 20px 0; text-align: center; }
+.search-empty { color: #6e7681; text-align: center; padding: 40px 0; }
+.search-source-tag {
+    display: inline-block;
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-weight: 600;
+}
+.search-source-tag.convex { background: #1a1040; color: #a78bfa; }
+.search-source-tag.live { background: #0f2d16; color: #3fb950; }
+
+.search-overlay {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.4);
+    z-index: 199;
+    display: none;
+}
+.search-overlay.open { display: block; }
+
 .split-separator {
     width: 1px;
     height: 24px;
@@ -1929,8 +2283,30 @@ body {
 <div class="header">
     <h1><span>Claude</span> Sessions Dashboard</h1>
     <div class="header-right">
+        <button class="search-btn" onclick="toggleSearchPanel()">\u2728 S\u00f6k &amp; Sammanfattning</button>
         <span class="refresh-dot"></span>
         <span id="last-update">Updating...</span>
+    </div>
+</div>
+
+<div class="search-overlay" id="search-overlay" onclick="toggleSearchPanel()"></div>
+<div class="search-panel" id="search-panel">
+    <div class="search-panel-header">
+        <h2>\u2728 S\u00f6k &amp; Sammanfattning</h2>
+        <button class="search-panel-close" onclick="toggleSearchPanel()">&times;</button>
+    </div>
+    <div class="search-panel-body">
+        <div class="search-input-group">
+            <input class="search-input" id="search-input" type="text" placeholder="Vad vill du s\u00f6ka p\u00e5?" onkeydown="if(event.key==='Enter')doSearch()">
+        </div>
+        <div class="search-scope">
+            <button class="active" onclick="setSearchScope('all', this)">Alla k\u00e4llor</button>
+            <button onclick="setSearchScope('convex', this)">Minne (Convex)</button>
+            <button onclick="setSearchScope('live', this)">Live sessioner</button>
+        </div>
+        <div class="search-results" id="search-results">
+            <div class="search-empty">\uD83D\uDD0D S\u00f6k bland alla sessioner och minnen</div>
+        </div>
     </div>
 </div>
 
@@ -2009,6 +2385,67 @@ async function resumeSession(fullId, cwd) {
         }
     } catch (err) {
         console.error('Resume error:', err);
+    }
+}
+
+let _searchScope = 'all';
+
+function toggleSearchPanel() {
+    const panel = document.getElementById('search-panel');
+    const overlay = document.getElementById('search-overlay');
+    const isOpen = panel.classList.contains('open');
+    panel.classList.toggle('open');
+    overlay.classList.toggle('open');
+    if (!isOpen) {
+        setTimeout(() => document.getElementById('search-input').focus(), 300);
+    }
+}
+
+function setSearchScope(scope, btn) {
+    _searchScope = scope;
+    btn.parentElement.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+}
+
+async function doSearch() {
+    const query = document.getElementById('search-input').value.trim();
+    if (!query) return;
+    const el = document.getElementById('search-results');
+    el.innerHTML = '<div class="search-loading">S\u00f6ker...</div>';
+
+    try {
+        const params = new URLSearchParams({q: query, scope: _searchScope});
+        const res = await fetch('/api/search?' + params.toString());
+        const data = await res.json();
+        if (!data.results || !data.results.length) {
+            el.innerHTML = '<div class="search-empty">Inga tr\u00e4ffar f\u00f6r "' + query.replace(/</g,'&lt;') + '"</div>';
+            return;
+        }
+        el.innerHTML = data.results.map((r, i) => {
+            const sourceTag = r.source === 'convex'
+                ? '<span class="search-source-tag convex">Minne</span>'
+                : '<span class="search-source-tag live">Live</span>';
+            const slug = r.slug || r.sessionId?.slice(0,8) || '?';
+            const resumeBtn = r.fullId
+                ? `<button onclick="resumeSession('${r.fullId}', '${(r.cwd||'').replace(/'/g, "\\\\'")}')">&#x21bb; Resume</button>`
+                : '';
+            return `
+            <div class="search-result">
+                <div class="search-result-header">
+                    <span class="search-result-slug">${slug} ${sourceTag}</span>
+                    <span class="search-result-meta">${r.when || ''}</span>
+                </div>
+                <div class="search-result-project">${r.project || ''} ${r.model ? '\u00b7 ' + r.model : ''}</div>
+                <div class="search-result-content">${(r.snippet || '').replace(/</g,'&lt;')}</div>
+                <div class="search-result-expanded" id="search-exp-${i}">${(r.expanded || '').replace(/</g,'&lt;')}</div>
+                <div class="search-result-actions">
+                    ${r.expanded ? `<button onclick="document.getElementById('search-exp-${i}').classList.toggle('open')">Ut\u00f6kad sammanfattning</button>` : ''}
+                    ${resumeBtn}
+                </div>
+            </div>`;
+        }).join('');
+    } catch (err) {
+        el.innerHTML = '<div class="search-loading">Fel: ' + err.message + '</div>';
     }
 }
 
@@ -2494,6 +2931,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
             params = parse_qs(parsed.query)
             full_id = params.get("id", [None])[0]
             self._get_summary(full_id)
+        elif path == "/api/search":
+            params = parse_qs(parsed.query)
+            query = params.get("q", [None])[0]
+            scope = params.get("scope", ["all"])[0]
+            self._search(query, scope)
+        elif path == "/api/push-to-memory":
+            params = parse_qs(parsed.query)
+            full_id = params.get("id", [None])[0]
+            self._push_to_memory(full_id)
         elif path == "/api/export-summary":
             params = parse_qs(parsed.query)
             full_id = params.get("id", [None])[0]
@@ -2560,6 +3006,54 @@ class DashboardHandler(BaseHTTPRequestHandler):
             summary = generate_summary(full_id)
         ok = summary is not None
         result = json.dumps({"ok": ok, "summary": summary}).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(result)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(result)
+
+    def _search(self, query, scope):
+        results = []
+        if query:
+            results = search_all(query, scope)
+        result = json.dumps({"ok": True, "results": results}).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(result)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(result)
+
+    def _push_to_memory(self, full_id):
+        """Push a session summary to Convex memory."""
+        ok = False
+        if full_id:
+            data = export_session_data(full_id)
+            if data and data.get("summary"):
+                # Store session
+                _convex_post("/api/sessions/store", {
+                    "fullId": data["sessionId"],
+                    "slug": data.get("slug", ""),
+                    "model": data.get("model", ""),
+                    "cost": data.get("cost", 0),
+                    "tokensTotal": data.get("tokensTotal", 0),
+                    "messages": data.get("messages", 0),
+                    "tools": data.get("tools", 0),
+                    "durationMinutes": data.get("durationMinutes", 0),
+                    "cwd": data.get("cwd", ""),
+                })
+                # Store memory
+                resp = _convex_post("/api/memories/store", {
+                    "type": "summary",
+                    "title": f"Session: {data.get('slug', data['sessionId'][:8])}",
+                    "content": data["summary"],
+                    "tags": data.get("tags", []),
+                    "importance": 3,
+                    "cwd": data.get("cwd", ""),
+                })
+                ok = resp is not None
+        result = json.dumps({"ok": ok}).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(result)))
